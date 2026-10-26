@@ -1,0 +1,152 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  CREATOR
+  MANAGER
+  REVIEWER
+}
+
+enum SubmissionStatus {
+  DRAFT
+  IN_REVIEW
+  CHANGES_REQUESTED
+  APPROVED
+}
+
+enum RuleCategory {
+  TONE
+  TERMINOLOGY
+  CLAIM
+  VISUAL
+  ACCESSIBILITY
+}
+
+enum FindingSeverity {
+  INFO
+  WARNING
+  ERROR
+}
+
+model User {
+  id                 String       @id @default(cuid())
+  name               String
+  email              String       @unique
+  passwordHash       String
+  role               UserRole     @default(CREATOR)
+  createdAt          DateTime     @default(now())
+
+  createdSubmissions Submission[] @relation("SubmissionCreator")
+  reviewedSubmissions Submission[] @relation("SubmissionReviewer")
+  revisions          Revision[]   @relation("RevisionAuthor")
+  comments           Comment[]
+}
+
+model BrandProfile {
+  id          String        @id @default(cuid())
+  name        String
+  description String?
+  brandColors String[]      @default([])
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  rules       BrandRule[]
+  facts       ApprovedFact[]
+  submissions Submission[]
+}
+
+model BrandRule {
+  id             String       @id @default(cuid())
+  ruleCode       String
+  category       RuleCategory
+  title          String
+  description    String       @db.Text
+  pattern        String?
+  isActive       Boolean      @default(true)
+  brandProfileId String
+  brandProfile   BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  @@unique([brandProfileId, ruleCode])
+}
+
+model ApprovedFact {
+  id             String       @id @default(cuid())
+  factCode       String
+  claim          String       @db.Text
+  sourceLabel    String
+  sourceUrl      String?
+  isActive       Boolean      @default(true)
+  brandProfileId String
+  brandProfile   BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+
+  @@unique([brandProfileId, factCode])
+}
+
+model Submission {
+  id             String           @id @default(cuid())
+  title          String
+  contentText    String           @db.Text
+  imageName      String?
+  imageAltText   String?          @db.Text
+  status         SubmissionStatus @default(DRAFT)
+  brandProfileId String
+  brandProfile   BrandProfile     @relation(fields: [brandProfileId], references: [id])
+  creatorId      String
+  creator        User             @relation("SubmissionCreator", fields: [creatorId], references: [id])
+  reviewerId     String?
+  reviewer       User?            @relation("SubmissionReviewer", fields: [reviewerId], references: [id])
+  findings       Finding[]
+  revisions      Revision[]
+  comments       Comment[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+}
+
+model Finding {
+  id            String          @id @default(cuid())
+  category      RuleCategory
+  severity      FindingSeverity @default(WARNING)
+  title         String
+  message       String          @db.Text
+  evidence      String?         @db.Text
+  suggestion    String?         @db.Text
+  originalSpan  String?         @db.Text
+  suggestedSpan String?         @db.Text
+  ruleCode      String?
+  confidence    String?
+  isResolved    Boolean         @default(false)
+  submissionId  String
+  submission    Submission      @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  createdAt     DateTime        @default(now())
+}
+
+model Revision {
+  id           String     @id @default(cuid())
+  version      Int
+  contentText  String     @db.Text
+  submissionId String
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  authorId     String
+  author       User       @relation("RevisionAuthor", fields: [authorId], references: [id])
+  createdAt    DateTime   @default(now())
+
+  @@unique([submissionId, version])
+}
+
+model Comment {
+  id           String     @id @default(cuid())
+  body         String     @db.Text
+  submissionId String
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  authorId     String
+  author       User       @relation(fields: [authorId], references: [id])
+  createdAt    DateTime   @default(now())
+}
