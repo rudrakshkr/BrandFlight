@@ -1,5 +1,17 @@
 node_modules/
 **/node_modules/
+
+# Environment variables
 **/.env
 **/.env.*
-!**/.env.exampleserver/generated/
+!**/.env.example
+
+# Generated files
+server/generated/
+server/dist/
+
+# Local AI tooling
+server/.agents/
+server/.claude/
+server/.windsurf/
+server/skills-lock.json
