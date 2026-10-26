@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { prisma } from "./lib/prisma.js";
+import { runSemanticAudit } from "./lib/gemini.js";
 
 const app = express();
 
@@ -107,11 +108,45 @@ app.post("/api/audit", async (req, res) => {
       });
     }
 
+    let semanticStatus: "completed" | "unavailable" = "completed";
+
+    try {
+      const semanticFindings = await runSemanticAudit(
+        content,
+        brand.rules.map(({ ruleCode, category, title, description }) => ({
+          ruleCode,
+          category,
+          title,
+          description,
+        })),
+        brand.facts.map(({ factCode, claim }) => ({
+          factCode,
+          claim,
+        })),
+      );
+
+      for (const finding of semanticFindings) {
+        const duplicate = findings.some(
+          (existing) =>
+            existing.category === finding.category &&
+            existing.ruleCode === finding.ruleCode &&
+            existing.evidence?.toLowerCase() === finding.evidence.toLowerCase(),
+        );
+
+        if (!duplicate && findings.length < 20) {
+          findings.push(finding);
+        }
+      }
+    } catch (error) {
+      console.error("Gemini audit failed:", error);
+      semanticStatus = "unavailable";
+    }
+
     return res.json({
       brand: { id: brand.id, name: brand.name },
       totalFindings: findings.length,
       findings,
-      note: "This initial version runs deterministic checks only.",
+      semanticStatus
     });
   } catch (error) {
     console.error("Audit failed:", error);
