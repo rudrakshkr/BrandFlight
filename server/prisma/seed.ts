@@ -32,7 +32,7 @@ async function main() {
       category: "TERMINOLOGY" as const,
       title: "Avoid banned promotional terms",
       description: "Flag unsupported guarantees and superlatives.",
-      pattern: "\\b(revolutionary|guaranteed|number one)\\b",
+      pattern: "\\b(revolutionary|guarantee(?:s|d|ing)?|number one)\\b",
     },
     {
       ruleCode: "CLAIM-01",

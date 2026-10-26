@@ -4,6 +4,8 @@ node_modules
 
 /generated/prisma
 
+dist/
+
 # AI coding tool metadata
 .agents/
 .claude/
