@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, type FormEvent, type ReactNode } from 'react'
 import './App.css'
+import RulebookPanel, { type BrandProfileData } from './RulebookPanel'
 
 type RuleCategory = 'TONE' | 'TERMINOLOGY' | 'CLAIM' | 'VISUAL' | 'ACCESSIBILITY'
 type FindingSeverity = 'INFO' | 'WARNING' | 'ERROR'
@@ -283,6 +284,7 @@ function BrandFlightMark(): ReactNode {
 
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>('workspace')
+  const [brandProfile, setBrandProfile] = useState<BrandProfileData | null>(null)
   const [selectedSampleId, setSelectedSampleId] = useState<string>(SAMPLE_DRAFTS[0].id)
   const [draftTitle, setDraftTitle] = useState<string>(SAMPLE_DRAFTS[0].title)
   const [draftChannel, setDraftChannel] = useState<string>(SAMPLE_DRAFTS[0].channel)
@@ -495,7 +497,7 @@ export function App() {
 
           <div className="bf-header-right">
             <span className="bf-brand-context">
-              Brand: <strong>{auditResult?.brand.name ?? SEEDED_BRAND_PROFILE.name}</strong>
+              Brand: <strong>{brandProfile?.name ?? auditResult?.brand.name ?? SEEDED_BRAND_PROFILE.name}</strong>
             </span>
             <span className="bf-header-divider" aria-hidden="true" />
             <span className="bf-api-indicator" title={`Endpoint: ${API_BASE_URL}/api/audit`}>
@@ -662,7 +664,7 @@ export function App() {
                   {showFactsDrawer && (
                     <div className="bf-card-body">
                       <div className="bf-compact-facts">
-                        {SEEDED_BRAND_PROFILE.facts.map((fact) => (
+                        {(brandProfile?.facts ?? SEEDED_BRAND_PROFILE.facts).map((fact) => (
                           <div key={fact.factCode} className="bf-compact-fact-item">
                             <span className="bf-rule-tag">{fact.factCode}</span>
                             <span>{fact.claim}</span>
@@ -1003,78 +1005,12 @@ export function App() {
             </div>
           </>
         ) : (
-          /* Brand Rulebook & Approved Facts View */
-          <div className="bf-card">
-            <div className="bf-card-header">
-              <div>
-                <h1 className="bf-section-title" style={{ fontSize: '17px' }}>
-                  {SEEDED_BRAND_PROFILE.name} — Brand Rulebook &amp; Approved Facts
-                </h1>
-                <p className="bf-section-meta" style={{ marginTop: '2px' }}>
-                  Active rules and verified product claims enforced by the backend audit endpoint.
-                </p>
-              </div>
-              <button
-                type="button"
-                className="bf-btn-primary"
-                onClick={() => setActiveView('workspace')}
-              >
-                Back to Audit Workspace
-              </button>
-            </div>
-
-            <div className="bf-card-body">
-              <div className="bf-field">
-                <h2 className="bf-section-title">Configured Governance Rules</h2>
-                <div className="bf-rulebook-grid" style={{ marginTop: '6px' }}>
-                  {SEEDED_BRAND_PROFILE.rules.map((rule) => (
-                    <div key={rule.ruleCode} className="bf-rule-box">
-                      <div className="bf-finding-meta">
-                        <span className="bf-rule-tag">{rule.ruleCode}</span>
-                        <span className="bf-source-meta">{rule.engine}</span>
-                      </div>
-                      <h3 className="bf-finding-title">{rule.title}</h3>
-                      <p className="bf-finding-desc">{rule.description}</p>
-                      {rule.pattern && (
-                        <div style={{ marginTop: '4px' }}>
-                          <code className="bf-rule-tag">{rule.pattern}</code>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="bf-field" style={{ marginTop: '8px' }}>
-                <h2 className="bf-section-title">Approved Product Facts</h2>
-                <div className="bf-rulebook-grid" style={{ marginTop: '6px' }}>
-                  {SEEDED_BRAND_PROFILE.facts.map((fact) => (
-                    <div key={fact.factCode} className="bf-rule-box">
-                      <div className="bf-finding-meta">
-                        <span className="bf-rule-tag">{fact.factCode}</span>
-                        <span className="bf-source-meta">{fact.sourceLabel}</span>
-                      </div>
-                      <p className="bf-finding-title" style={{ fontWeight: 500 }}>
-                        {fact.claim}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="bf-field" style={{ marginTop: '8px' }}>
-                <h2 className="bf-section-title">Brand Colour Palette</h2>
-                <div className="bf-swatch-list" style={{ marginTop: '6px' }}>
-                  {SEEDED_BRAND_PROFILE.brandColors.map((hex) => (
-                    <div key={hex} className="bf-swatch-item">
-                      <span className="bf-swatch-color" style={{ backgroundColor: hex }} />
-                      <span>{hex}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
+          <RulebookPanel
+            apiBaseUrl={API_BASE_URL}
+            brandProfileId={BRAND_PROFILE_ID}
+            onBrandLoaded={setBrandProfile}
+            onBack={() => setActiveView('workspace')}
+          />
         )}
       </main>
     </div>

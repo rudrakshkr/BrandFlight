@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import { prisma } from "./lib/prisma.js";
 import { runSemanticAudit } from "./lib/gemini.js";
+import { brandsRouter } from "./routes/brands.js";
 
 const app = express();
 
@@ -12,6 +13,8 @@ app.use(express.json({ limit: "1mb" }));
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", service: "BrandFlight API" });
 });
+
+app.use("/api/brands", brandsRouter);
 
 app.post("/api/audit", async (req, res) => {
   const { brandProfileId, content } = req.body ?? {};
