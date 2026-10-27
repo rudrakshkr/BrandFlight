@@ -40,6 +40,18 @@ async function main() {
       title: "Substantiate promotional claims",
       description: "Numerical performance claims and guarantees must be supported by approved facts.",
     },
+    {
+      ruleCode: "VISUAL-01",
+      category: "VISUAL" as const,
+      title: "Use the approved brand palette",
+      description: "Campaign image colors should align with the approved brand color palette.",
+    },
+    {
+      ruleCode: "ACCESSIBILITY-01",
+      category: "ACCESSIBILITY" as const,
+      title: "Provide meaningful image alt text",
+      description: "Campaign images require meaningful alternative text of 10 to 150 characters.",
+    },
   ];
 
   for (const rule of rules) {

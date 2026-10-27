@@ -4,6 +4,7 @@ import cors from "cors";
 import { prisma } from "./lib/prisma.js";
 import { runSemanticAudit } from "./lib/gemini.js";
 import { brandsRouter } from "./routes/brands.js";
+import { imageAuditRouter } from "./routes/image-audit.js";
 
 const app = express();
 
@@ -15,6 +16,7 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.use("/api/brands", brandsRouter);
+app.use("/api/audit/image", imageAuditRouter);
 
 app.post("/api/audit", async (req, res) => {
   const { brandProfileId, content } = req.body ?? {};

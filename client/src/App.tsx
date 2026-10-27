@@ -41,6 +41,31 @@ interface AuditApiResponse {
   semanticStatus: 'completed' | 'unavailable'
 }
 
+interface ImageAuditFinding {
+  category: 'VISUAL' | 'ACCESSIBILITY'
+  severity: 'WARNING' | 'ERROR'
+  title: string
+  message: string
+  evidence: string
+  suggestion: string
+  ruleCode: string
+  confidence: string
+}
+
+interface ImageAuditApiResponse {
+  image: {
+    name: string
+    format: string
+    width: number | null
+    height: number | null
+    dominantColors: string[]
+    approvedColors: string[]
+    altTextLength: number
+  }
+  totalFindings: number
+  findings: ImageAuditFinding[]
+}
+
 interface SampleDraft {
   id: string
   label: string
@@ -285,6 +310,12 @@ function BrandFlightMark(): ReactNode {
 export function App() {
   const [activeView, setActiveView] = useState<ActiveView>('workspace')
   const [brandProfile, setBrandProfile] = useState<BrandProfileData | null>(null)
+  const [imageFile, setImageFile] = useState<File | null>(null)
+  const [imageAltText, setImageAltText] = useState('')
+  const [isImageAuditing, setIsImageAuditing] = useState(false)
+  const [imageAuditError, setImageAuditError] = useState<string | null>(null)
+  const [imageAuditResult, setImageAuditResult] =
+    useState<ImageAuditApiResponse | null>(null)
   const [selectedSampleId, setSelectedSampleId] = useState<string>(SAMPLE_DRAFTS[0].id)
   const [draftTitle, setDraftTitle] = useState<string>(SAMPLE_DRAFTS[0].title)
   const [draftChannel, setDraftChannel] = useState<string>(SAMPLE_DRAFTS[0].channel)
@@ -372,6 +403,53 @@ export function App() {
       setIsAuditing(false)
     }
   }, [])
+
+  const handleImageAuditSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (!imageFile) {
+      setImageAuditError('Choose a PNG or JPEG image first.')
+      return
+    }
+
+    setIsImageAuditing(true)
+    setImageAuditError(null)
+    setImageAuditResult(null)
+
+    try {
+      const formData = new FormData()
+      formData.append('brandProfileId', BRAND_PROFILE_ID)
+      formData.append('altText', imageAltText)
+      formData.append('image', imageFile)
+
+      const response = await fetch(`${API_BASE_URL}/api/audit/image`, {
+        method: 'POST',
+        body: formData,
+      })
+
+      const data: unknown = await response.json().catch(() => null)
+
+      if (!response.ok) {
+        const message =
+          typeof data === 'object' &&
+          data !== null &&
+          'error' in data &&
+          typeof data.error === 'string'
+            ? data.error
+            : `Image audit failed with HTTP ${response.status}`
+
+        throw new Error(message)
+      }
+
+      setImageAuditResult(data as ImageAuditApiResponse)
+    } catch (err) {
+      setImageAuditError(
+        err instanceof Error ? err.message : 'Unable to audit this image.',
+      )
+    } finally {
+      setIsImageAuditing(false)
+    }
+  }
 
   useEffect(() => {
     void runBackendAudit(SAMPLE_DRAFTS[0].content)
@@ -646,6 +724,181 @@ export function App() {
                         {isAuditing ? 'Running audit...' : 'Run Preflight Audit'}
                       </button>
                     </div>
+                  </div>
+                </form>
+
+
+                {/* Campaign image and alt-text audit */}
+                <form className="bf-card" onSubmit={handleImageAuditSubmit}>
+                  <div className="bf-card-header">
+                    <div>
+                      <h2 className="bf-section-title">Campaign Image Audit</h2>
+                      <p className="bf-section-meta">PNG or JPEG · maximum 5 MB</p>
+                    </div>
+                  </div>
+
+                  <div className="bf-card-body">
+                    <div className="bf-field">
+                      <label className="bf-label" htmlFor="bf-image-file">
+                        Campaign image
+                      </label>
+                      <input
+                        id="bf-image-file"
+                        className="bf-input"
+                        type="file"
+                        accept="image/png,image/jpeg,.png,.jpg,.jpeg"
+                        onChange={(event) => {
+                          const selectedFile = event.currentTarget.files?.[0] ?? null
+                          setImageFile(selectedFile)
+                          setImageAuditResult(null)
+                          setImageAuditError(null)
+                        }}
+                      />
+                      {imageFile && (
+                        <p className="bf-section-meta">
+                          {imageFile.name} · {(imageFile.size / (1024 * 1024)).toFixed(2)} MB
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="bf-field">
+                      <label className="bf-label" htmlFor="bf-image-alt-text">
+                        Image alt text
+                      </label>
+                      <textarea
+                        id="bf-image-alt-text"
+                        className="bf-textarea"
+                        rows={3}
+                        value={imageAltText}
+                        onChange={(event) => setImageAltText(event.target.value)}
+                        placeholder="Describe the meaningful content of the campaign image..."
+                      />
+                      <p className="bf-section-meta">
+                        Leave empty to test missing-alt-text detection.
+                      </p>
+                    </div>
+
+                    <div className="bf-editor-actions">
+                      <button
+                        type="submit"
+                        className="bf-btn-primary"
+                        disabled={isImageAuditing || !imageFile}
+                      >
+                        {isImageAuditing ? 'Auditing image…' : 'Audit Image & Alt Text'}
+                      </button>
+                    </div>
+
+                    {isImageAuditing && (
+                      <div className="bf-status-banner info" role="status">
+                        <div className="bf-banner-body">
+                          <div className="bf-banner-heading">Processing campaign image…</div>
+                          <div>Extracting dominant colors and checking alternative text.</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {imageAuditError && (
+                      <div className="bf-status-banner error" role="alert">
+                        <div className="bf-banner-body">
+                          <div className="bf-banner-heading">Image audit failed</div>
+                          <div>{imageAuditError}</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {imageAuditResult && (
+                      <div className="bf-image-audit-results">
+                        <div
+                          className={`bf-status-banner ${
+                            imageAuditResult.totalFindings > 0 ? 'warn' : 'success'
+                          }`}
+                          role="status"
+                        >
+                          <div className="bf-banner-body">
+                            <div className="bf-banner-heading">
+                              {imageAuditResult.totalFindings === 0
+                                ? 'No image or alt-text issues detected'
+                                : `${imageAuditResult.totalFindings} image finding(s)`}
+                            </div>
+                            <div>
+                              {imageAuditResult.image.name}
+                              {imageAuditResult.image.width && imageAuditResult.image.height
+                                ? ` · ${imageAuditResult.image.width} × ${imageAuditResult.image.height}px`
+                                : ''}
+                              {' · '}
+                              Alt text: {imageAuditResult.image.altTextLength} characters
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="bf-field">
+                          <span className="bf-label">Extracted dominant colors</span>
+                          <div className="bf-swatch-list" style={{ marginTop: '8px' }}>
+                            {imageAuditResult.image.dominantColors.map((color) => (
+                              <div className="bf-swatch-item" key={color}>
+                                <span
+                                  className="bf-swatch-color"
+                                  style={{ backgroundColor: color }}
+                                />
+                                <code>{color}</code>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="bf-field">
+                          <span className="bf-label">Approved brand palette</span>
+                          <div className="bf-swatch-list" style={{ marginTop: '8px' }}>
+                            {imageAuditResult.image.approvedColors.length > 0 ? (
+                              imageAuditResult.image.approvedColors.map((color) => (
+                                <div className="bf-swatch-item" key={color}>
+                                  <span
+                                    className="bf-swatch-color"
+                                    style={{ backgroundColor: color }}
+                                  />
+                                  <code>{color}</code>
+                                </div>
+                              ))
+                            ) : (
+                              <span className="bf-section-meta">
+                                No valid approved colors configured.
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {imageAuditResult.findings.map((finding, index) => (
+                          <article
+                            className={`bf-finding-card severity-${finding.severity}`}
+                            key={`${finding.ruleCode}-${finding.title}-${index}`}
+                          >
+                            <div className="bf-finding-meta">
+                              <div className="bf-finding-tags">
+                                <span className="bf-rule-tag">{finding.ruleCode}</span>
+                                <span
+                                  className={`bf-severity-indicator bf-severity-${finding.severity}`}
+                                >
+                                  {finding.category} · {finding.severity}
+                                </span>
+                              </div>
+                              <span className="bf-source-meta">{finding.confidence}</span>
+                            </div>
+                            <h3 className="bf-finding-title">{finding.title}</h3>
+                            <p className="bf-finding-desc">{finding.message}</p>
+                            <div className="bf-evidence-container">
+                              <div className="bf-evidence-row">
+                                <span className="bf-evidence-label">Evidence:</span>
+                                <span>{finding.evidence}</span>
+                              </div>
+                              <div className="bf-evidence-row">
+                                <span className="bf-evidence-label">Guidance:</span>
+                                <span>{finding.suggestion}</span>
+                              </div>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </form>
 
