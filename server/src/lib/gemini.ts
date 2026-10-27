@@ -43,7 +43,7 @@ export async function runSemanticAudit(
   ]);
 
   const response = await ai.models.generateContent({
-    model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
+    model: process.env.GEMINI_MODEL || "gemini-3.5-flash-lite",
     contents: JSON.stringify({
       task: "Review marketing content against the supplied brand rules and approved facts.",
       content,
