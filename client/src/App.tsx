@@ -139,35 +139,17 @@ const SEVERITY_RANK: Record<FindingSeverity, number> = {
 }
 
 /**
- * Finds the index of the sentence in `content` containing `evidence`.
- */
-function findSentenceIndex(content: string, evidence: string): number {
-  const lowerContent = content.toLowerCase()
-  const lowerEvidence = evidence.trim().toLowerCase()
-  if (!lowerEvidence) return -1
-
-  const pos = lowerContent.indexOf(lowerEvidence)
-  if (pos === -1) return -1
-
-  const prefix = content.slice(0, pos)
-  const sentenceBreaks = prefix.match(/[.!?]+(?:\s|$)/g)
-  return sentenceBreaks ? sentenceBreaks.length : 0
-}
-
-/**
- * Consolidates overlapping or same-sentence findings that refer to the same
- * underlying claim or rule category, while preserving every associated evidence string.
+ * Consolidates findings when their evidence overlaps, while keeping separate
+ * claims distinct even when they occur in the same sentence.
  */
 function consolidateFindings(
   rawFindings: RawAuditFinding[],
-  content: string,
 ): ConsolidatedFinding[] {
   const groups: ConsolidatedFinding[] = []
 
   for (const item of rawFindings) {
     const trimmedEvidence = item.evidence.trim()
     const lowerEv = trimmedEvidence.toLowerCase()
-    const itemSentenceIdx = findSentenceIndex(content, trimmedEvidence)
 
     const existingGroup = groups.find((group) => {
       if (group.category !== item.category) return false
@@ -178,16 +160,6 @@ function consolidateFindings(
         return gEv.includes(lowerEv) || lowerEv.includes(gEv)
       })
       if (hasSubstringOverlap) return true
-
-      // 2. Same sentence + same category & rule family
-      if (itemSentenceIdx !== -1) {
-        const sharesSentence = group.evidences.some(
-          (ev) => findSentenceIndex(content, ev) === itemSentenceIdx,
-        )
-        if (sharesSentence && group.ruleCodes.includes(item.ruleCode)) {
-          return true
-        }
-      }
 
       return false
     })
@@ -404,8 +376,8 @@ export function App() {
   }, [runBackendAudit])
 
   const consolidatedFindings = useMemo(
-    () => consolidateFindings(auditResult?.findings ?? [], content),
-    [auditResult, content],
+    () => consolidateFindings(auditResult?.findings ?? []),
+    [auditResult],
   )
 
   const openConsolidatedCount = useMemo(
