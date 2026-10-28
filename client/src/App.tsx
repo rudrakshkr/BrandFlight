@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type SubmitEvent, type ReactNode } from 'react'
 import './App.css'
 import RulebookPanel, { type BrandProfileData } from './RulebookPanel'
+import SavedSubmissionsPanel, { type SubmissionDetail } from './SavedSubmissionsPanel'
 
 type RuleCategory = 'TONE' | 'TERMINOLOGY' | 'CLAIM' | 'VISUAL' | 'ACCESSIBILITY'
 type FindingSeverity = 'INFO' | 'WARNING' | 'ERROR'
-type ActiveView = 'workspace' | 'rulebook'
+type ActiveView = 'workspace' | 'rulebook' | 'submissions'
 type AuthRole = 'CREATOR' | 'REVIEWER' | 'MANAGER'
 
 interface AuthUser {
@@ -328,6 +329,7 @@ export function App() {
   const [loginBusy, setLoginBusy] = useState(false)
   const [loginError, setLoginError] = useState<string | null>(null)
   const [activeView, setActiveView] = useState<ActiveView>('workspace')
+  const [editingSubmissionId, setEditingSubmissionId] = useState<string | null>(null)
   const [brandProfile, setBrandProfile] = useState<BrandProfileData | null>(null)
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imageAltText, setImageAltText] = useState('')
@@ -346,6 +348,7 @@ export function App() {
   const [isAuditing, setIsAuditing] = useState<boolean>(false)
   const [auditError, setAuditError] = useState<string | null>(null)
   const [auditResult, setAuditResult] = useState<AuditApiResponse | null>(null)
+  const [auditRestoredFromSubmission, setAuditRestoredFromSubmission] = useState(false)
   const [auditedContent, setAuditedContent] = useState<string | null>(null)
   const [saveDraftBusy, setSaveDraftBusy] = useState(false)
   const [saveDraftError, setSaveDraftError] = useState<string | null>(null)
@@ -431,7 +434,8 @@ export function App() {
       return
     }
 
-    setAuditedContent(null);
+    setAuditedContent(null)
+    setAuditRestoredFromSubmission(false)
     setIsAuditing(true)
     setAuditError(null)
     setResolvedGroups({})
@@ -521,10 +525,6 @@ export function App() {
     }
   }
 
-  useEffect(() => {
-    void runBackendAudit(SAMPLE_DRAFTS[0].content)
-  }, [runBackendAudit])
-
   const consolidatedFindings = useMemo(
     () => consolidateFindings(auditResult?.findings ?? []),
     [auditResult],
@@ -552,6 +552,10 @@ export function App() {
   }, [consolidatedFindings, categoryFilter, resolvedGroups])
 
   const handleSelectScenario = (sample: SampleDraft) => {
+    setEditingSubmissionId(null)
+    lastSavedDraftKeyRef.current = null
+    setSaveDraftError(null)
+    setSaveDraftMessage(null)
     setSelectedSampleId(sample.id)
     setDraftTitle(sample.title)
     setDraftChannel(sample.channel)
@@ -773,9 +777,14 @@ export function App() {
     saveInProgressRef.current = true
     setSaveDraftBusy(true)
 
+    const isUpdating = editingSubmissionId !== null
+    const endpoint = isUpdating
+      ? `${API_BASE_URL}/api/submissions/${editingSubmissionId}`
+      : `${API_BASE_URL}/api/submissions`
+
     try {
-      const response = await fetch(`${API_BASE_URL}/api/submissions`, {
-        method: 'POST',
+      const response = await fetch(endpoint, {
+        method: isUpdating ? 'PATCH' : 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authSession.token}`,
@@ -802,8 +811,11 @@ export function App() {
       }
 
       lastSavedDraftKeyRef.current = snapshotKey
+      if (!isUpdating) {
+        setEditingSubmissionId(data.submission.id)
+      }
       setSaveDraftMessage(
-        `Draft saved successfully. Status: ${data.submission.status}. ID: ${data.submission.id}`,
+        `Draft ${isUpdating ? 'updated' : 'saved'} successfully. Status: ${data.submission.status}. ID: ${data.submission.id}`,
       )
     } catch (error) {
       setSaveDraftError(
@@ -813,6 +825,64 @@ export function App() {
       saveInProgressRef.current = false
       setSaveDraftBusy(false)
     }
+  }
+
+  const handleOpenSavedDraft = (submission: SubmissionDetail) => {
+    if (submission.status !== 'DRAFT' && submission.status !== 'CHANGES_REQUESTED') {
+      return
+    }
+
+    const restoredFindings: RawAuditFinding[] = submission.findings.map((finding) => ({
+      category: finding.category,
+      severity: finding.severity,
+      title: finding.title,
+      message: finding.message,
+      evidence: finding.evidence ?? '',
+      suggestion: finding.suggestion ?? '',
+      ruleCode: finding.ruleCode ?? '',
+      confidence: finding.confidence ?? '',
+    }))
+
+    const restoredSnapshotKey = JSON.stringify({
+      title: submission.title.trim(),
+      content: submission.contentText,
+      findings: restoredFindings,
+    })
+
+    setEditingSubmissionId(submission.id)
+    lastSavedDraftKeyRef.current = restoredSnapshotKey
+    setSelectedSampleId('')
+    setDraftTitle(submission.title)
+    setContent(submission.contentText)
+    setCategoryFilter('ALL')
+    setResolvedGroups({})
+    setAuditError(null)
+    setAuditResult({
+      brand: submission.brandProfile,
+      totalFindings: restoredFindings.length,
+      findings: restoredFindings,
+      semanticStatus: 'unavailable',
+    })
+    setAuditedContent(submission.contentText)
+    setAuditRestoredFromSubmission(true)
+    setSaveDraftError(null)
+    setSaveDraftMessage(null)
+    setActiveView('workspace')
+  }
+
+  const handleStartNewDraft = () => {
+    setEditingSubmissionId(null)
+    lastSavedDraftKeyRef.current = null
+    setSelectedSampleId('')
+    setDraftTitle('Untitled campaign')
+    setDraftChannel('Website')
+    setContent('')
+    setAuditResult(null)
+    setAuditedContent(null)
+    setAuditRestoredFromSubmission(false)
+    setSaveDraftError(null)
+    setSaveDraftMessage(null)
+    setActiveView('workspace')
   }
 
   return (
@@ -847,6 +917,15 @@ export function App() {
             >
               Brand Rulebook &amp; Facts
             </button>
+            {authSession.user.role === 'CREATOR' && (
+              <button
+                type="button"
+                className={`bf-nav-link ${activeView === 'submissions' ? 'active' : ''}`}
+                onClick={() => setActiveView('submissions')}
+              >
+                Saved Submissions
+              </button>
+            )}
           </nav>
 
           <div className="bf-header-right">
@@ -1001,6 +1080,10 @@ export function App() {
                         onClick={() => {
                           const sample =
                             SAMPLE_DRAFTS.find((s) => s.id === selectedSampleId) ?? SAMPLE_DRAFTS[0]
+                          setEditingSubmissionId(null)
+                          lastSavedDraftKeyRef.current = null
+                          setSaveDraftError(null)
+                          setSaveDraftMessage(null)
                           setDraftTitle(sample.title)
                           setDraftChannel(sample.channel)
                           setContent(sample.content)
@@ -1298,7 +1381,18 @@ export function App() {
 
                     {!isAuditing && !auditError && auditResult && (
                       <>
-                        {auditResult.semanticStatus === 'completed' ? (
+                        {auditRestoredFromSubmission ? (
+                          <div className="bf-status-banner success">
+                            <div className="bf-banner-body">
+                              <div className="bf-banner-heading">
+                                <span>Saved audit findings restored</span>
+                              </div>
+                              <div>
+                                Showing the findings saved with this draft. No new audit was run.
+                              </div>
+                            </div>
+                          </div>
+                        ) : auditResult.semanticStatus === 'completed' ? (
                           <div className="bf-status-banner success">
                             <div className="bf-banner-body">
                               <div className="bf-banner-heading">
@@ -1578,12 +1672,19 @@ export function App() {
               </div>
             </div>
           </>
-        ) : (
+        ) : activeView === 'rulebook' ? (
           <RulebookPanel
             apiBaseUrl={API_BASE_URL}
             brandProfileId={BRAND_PROFILE_ID}
             onBrandLoaded={setBrandProfile}
             onBack={() => setActiveView('workspace')}
+          />
+        ) : (
+          <SavedSubmissionsPanel
+            apiBaseUrl={API_BASE_URL}
+            token={authSession.token}
+            onOpenDraft={handleOpenSavedDraft}
+            onNewDraft={handleStartNewDraft}
           />
         )}
       </main>

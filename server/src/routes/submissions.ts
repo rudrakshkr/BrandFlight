@@ -83,6 +83,7 @@ function parseFindings(value: unknown): PersistedFinding[] | null {
 }
 
 const submissionDetails = {
+  brandProfile: { select: { id: true, name: true } },
   creator: { select: { id: true, name: true, email: true, role: true } },
   reviewer: { select: { id: true, name: true, email: true, role: true } },
   findings: { orderBy: { createdAt: "asc" as const } },
@@ -297,6 +298,10 @@ submissionsRouter.patch(
     }
 
     const { title, contentText } = body;
+    const hasFindings = body.findings !== undefined;
+    const findings = hasFindings
+      ? parseFindings(body.findings)
+      : undefined;
 
     if (
       (title !== undefined &&
@@ -305,7 +310,8 @@ submissionsRouter.patch(
         (typeof contentText !== "string" ||
           !contentText.trim() ||
           contentText.length > 20000)) ||
-      (title === undefined && contentText === undefined)
+      (title === undefined && contentText === undefined && !hasFindings) ||
+      (hasFindings && findings === null)
     ) {
       return res.status(400).json({ error: "Invalid submission update." });
     }
@@ -362,10 +368,28 @@ submissionsRouter.patch(
           });
         }
 
+        if (findings !== undefined && findings !== null) {
+          await tx.finding.deleteMany({
+            where: { submissionId: current.id },
+          });
+
+          if (findings.length > 0) {
+            await tx.finding.createMany({
+              data: findings.map((finding) => ({
+                ...finding,
+                submissionId: current.id,
+              })),
+            });
+          }
+        }
+
         return tx.submission.findUnique({
           where: { id: result.id },
           include: submissionDetails,
         });
+      }, {
+        maxWait: 10_000,
+        timeout: 20_000,
       });
 
       return res.json({ submission: updated });
