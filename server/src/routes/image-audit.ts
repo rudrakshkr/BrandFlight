@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import sharp from "sharp";
 import { prisma } from "../lib/prisma.js";
+import { requireAuth } from "../middleware/auth.js";
 
 export const imageAuditRouter = Router();
 
@@ -249,7 +250,7 @@ async function processImageAudit(req: Request, res: Response) {
   });
 }
 
-imageAuditRouter.post("/", (req, res) => {
+imageAuditRouter.post("/", requireAuth, (req, res) => {
   upload.single("image")(req, res, (uploadError) => {
     if (uploadError) {
       if (uploadError instanceof multer.MulterError) {

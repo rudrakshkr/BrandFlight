@@ -1809,3 +1809,24 @@
 .bf-saved-card-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 @media (max-width: 900px) { .bf-review-layout { grid-template-columns: 1fr; } }
 @media (max-width: 650px) { .bf-review-header { align-items: flex-start; flex-direction: column; } .bf-review-detail { padding: 15px; } .bf-review-decision-buttons { justify-content: stretch; } .bf-review-decision-buttons button { flex: 1; } }
+
+
+/* BrandFlight URL routing: image audit is a standalone feature page. */
+.bf-workspace-image-only {
+  display: block;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.bf-workspace-image-only .bf-left-sticky {
+  position: static;
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.bf-workspace-image-only .bf-right-Pane,
+.bf-workspace-image-only .bf-left-sticky > form:first-of-type,
+.bf-workspace-image-only .bf-left-sticky > .bf-card:last-child {
+  display: none !important;
+}
+

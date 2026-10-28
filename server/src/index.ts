@@ -7,6 +7,7 @@ import { brandsRouter } from "./routes/brands.js";
 import { authRouter } from "./routes/auth.js";
 import { submissionsRouter } from "./routes/submissions.js";
 import { imageAuditRouter } from "./routes/image-audit.js";
+import { requireAuth } from "./middleware/auth.js";
 
 const app = express();
 
@@ -22,7 +23,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/submissions", submissionsRouter);
 app.use("/api/audit/image", imageAuditRouter);
 
-app.post("/api/audit", async (req, res) => {
+app.post("/api/audit", requireAuth, async (req, res) => {
   const { brandProfileId, content } = req.body ?? {};
 
   if (

@@ -1,7 +1,14 @@
 import { Router, type Response } from "express";
 import { prisma } from "../lib/prisma.js";
+import { requireAuth, requireRoles } from "../middleware/auth.js";
 
 export const brandsRouter = Router();
+
+brandsRouter.use(requireAuth);
+brandsRouter.use((req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD") return next();
+  return requireRoles("MANAGER")(req, res, next);
+});
 
 type RuleCategory =
   | "TONE"

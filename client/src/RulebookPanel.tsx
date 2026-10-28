@@ -90,6 +90,11 @@ async function apiRequest<T>(
   init: RequestInit = {},
 ): Promise<T> {
   const headers = new Headers(init.headers)
+  const token = window.sessionStorage.getItem('brandflight_token')
+
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
 
   if (init.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
@@ -169,7 +174,11 @@ export default function RulebookPanel({
   }, [apiBaseUrl, basePath, onBrandLoaded])
 
   useEffect(() => {
-    void loadBrand()
+    const timerId = window.setTimeout(() => {
+      void loadBrand()
+    }, 0)
+
+    return () => window.clearTimeout(timerId)
   }, [loadBrand])
 
   const refreshAfterMutation = async (message: string) => {

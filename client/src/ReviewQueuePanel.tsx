@@ -82,7 +82,11 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
   }, [apiBaseUrl, token])
 
   useEffect(() => {
-    void loadQueue()
+    const timerId = window.setTimeout(() => {
+      void loadQueue()
+    }, 0)
+
+    return () => window.clearTimeout(timerId)
   }, [loadQueue])
 
   const openSubmission = async (item: Summary) => {

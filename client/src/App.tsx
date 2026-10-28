@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type SubmitEvent, type ReactNode } from 'react'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
 import RulebookPanel, { type BrandProfileData } from './RulebookPanel'
 import SavedSubmissionsPanel, { type SubmissionDetail } from './SavedSubmissionsPanel'
@@ -6,7 +7,25 @@ import ReviewQueuePanel from './ReviewQueuePanel'
 
 type RuleCategory = 'TONE' | 'TERMINOLOGY' | 'CLAIM' | 'VISUAL' | 'ACCESSIBILITY'
 type FindingSeverity = 'INFO' | 'WARNING' | 'ERROR'
-type ActiveView = 'workspace' | 'rulebook' | 'submissions' | 'review'
+type ActiveView = 'workspace' | 'image' | 'rulebook' | 'submissions' | 'review'
+
+const ROUTE_BY_VIEW: Record<ActiveView, string> = {
+  workspace: '/audit/text',
+  image: '/audit/image',
+  rulebook: '/rulebook',
+  submissions: '/submissions',
+  review: '/review',
+}
+
+const VIEW_BY_PATH: Record<string, ActiveView> = {
+  '/': 'workspace',
+  '/login': 'workspace',
+  '/audit/text': 'workspace',
+  '/audit/image': 'image',
+  '/rulebook': 'rulebook',
+  '/submissions': 'submissions',
+  '/review': 'review',
+}
 type AuthRole = 'CREATOR' | 'REVIEWER' | 'MANAGER'
 
 interface AuthUser {
@@ -323,14 +342,37 @@ function BrandFlightMark(): ReactNode {
 }
 
 export function App() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const routePath = location.pathname.replace(/\/+$/, '') || '/'
+  const submissionEditorMatch = routePath.match(/^\/submissions\/([^/]+)\/edit$/)
+  let routeSubmissionId: string | null = null
+
+  try {
+    routeSubmissionId = submissionEditorMatch
+      ? decodeURIComponent(submissionEditorMatch[1])
+      : null
+  } catch {
+    routeSubmissionId = null
+  }
+
+  const activeView = routeSubmissionId
+    ? 'workspace'
+    : VIEW_BY_PATH[routePath]
+  const setActiveView = useCallback((view: ActiveView) => {
+    navigate(ROUTE_BY_VIEW[view])
+  }, [navigate])
+
   const [authSession, setAuthSession] = useState<AuthSession | null>(null)
-  const [authChecking, setAuthChecking] = useState(true)
+  const [authChecking, setAuthChecking] = useState(
+    () => Boolean(window.sessionStorage.getItem('brandflight_token')),
+  )
   const [loginEmail, setLoginEmail] = useState('')
   const [loginPassword, setLoginPassword] = useState('')
   const [loginBusy, setLoginBusy] = useState(false)
   const [loginError, setLoginError] = useState<string | null>(null)
-  const [activeView, setActiveView] = useState<ActiveView>('workspace')
   const [editingSubmissionId, setEditingSubmissionId] = useState<string | null>(null)
+  const [routeDraftLoadedId, setRouteDraftLoadedId] = useState<string | null>(null)
   const [brandProfile, setBrandProfile] = useState<BrandProfileData | null>(null)
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imageAltText, setImageAltText] = useState('')
@@ -373,10 +415,7 @@ export function App() {
   useEffect(() => {
     const token = window.sessionStorage.getItem('brandflight_token')
 
-    if (!token) {
-      setAuthChecking(false)
-      return
-    }
+    if (!token) return
 
     const sessionToken: string = token
 
@@ -414,6 +453,144 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    if (authChecking) return
+
+    if (!authSession) {
+      if (routePath !== '/login') {
+        navigate('/login', { replace: true })
+      }
+      return
+    }
+
+    if (routePath === '/' || routePath === '/login') {
+      navigate('/audit/text', { replace: true })
+      return
+    }
+
+    if (routeSubmissionId && authSession.user.role !== 'CREATOR') {
+      navigate('/audit/text', { replace: true })
+      return
+    }
+
+    if (!activeView) return
+
+    if (
+      activeView === 'submissions' &&
+      authSession.user.role !== 'CREATOR'
+    ) {
+      navigate('/audit/text', { replace: true })
+      return
+    }
+
+    if (
+      activeView === 'review' &&
+      authSession.user.role === 'CREATOR'
+    ) {
+      navigate('/audit/text', { replace: true })
+    }
+  }, [authChecking, authSession, activeView, navigate, routePath, routeSubmissionId])
+
+  useEffect(() => {
+    if (
+      authChecking ||
+      !authSession ||
+      authSession.user.role !== 'CREATOR' ||
+      !routeSubmissionId ||
+      routeDraftLoadedId === routeSubmissionId
+    ) {
+      return
+    }
+
+    let cancelled = false
+
+    async function restoreDraftFromUrl() {
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/api/submissions/${encodeURIComponent(routeSubmissionId!)}`,
+          { headers: { Authorization: `Bearer ${authSession!.token}` } },
+        )
+
+        const data = (await response.json().catch(() => null)) as {
+          submission?: SubmissionDetail
+          error?: string
+        } | null
+
+        if (!response.ok || !data?.submission) {
+          throw new Error(
+            data?.error ?? `Unable to load this draft (HTTP ${response.status}).`,
+          )
+        }
+
+        const submission = data.submission
+
+        if (
+          submission.status !== 'DRAFT' &&
+          submission.status !== 'CHANGES_REQUESTED'
+        ) {
+          navigate('/submissions', { replace: true })
+          return
+        }
+
+        const restoredFindings: RawAuditFinding[] = submission.findings.map((finding) => ({
+          category: finding.category,
+          severity: finding.severity,
+          title: finding.title,
+          message: finding.message,
+          evidence: finding.evidence ?? '',
+          suggestion: finding.suggestion ?? '',
+          ruleCode: finding.ruleCode ?? '',
+          confidence: finding.confidence ?? '',
+        }))
+
+        const restoredSnapshotKey = JSON.stringify({
+          title: submission.title.trim(),
+          content: submission.contentText,
+          findings: restoredFindings,
+        })
+
+        if (cancelled) return
+
+        setEditingSubmissionId(submission.id)
+        lastSavedDraftKeyRef.current = restoredSnapshotKey
+        setSelectedSampleId('')
+        setDraftTitle(submission.title)
+        setDraftChannel('Website')
+        setContent(submission.contentText)
+        setCategoryFilter('ALL')
+        setResolvedGroups({})
+        setAuditError(null)
+        setAuditResult({
+          brand: submission.brandProfile,
+          totalFindings: restoredFindings.length,
+          findings: restoredFindings,
+          semanticStatus: 'unavailable',
+        })
+        setAuditedContent(submission.contentText)
+        setAuditRestoredFromSubmission(true)
+        setSaveDraftError(null)
+        setSaveDraftMessage(null)
+        setRouteDraftLoadedId(submission.id)
+      } catch (error) {
+        if (cancelled) return
+        console.error('Unable to restore draft from URL:', error)
+        navigate('/submissions', { replace: true })
+      }
+    }
+
+    void restoreDraftFromUrl()
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    authChecking,
+    authSession,
+    routeSubmissionId,
+    routeDraftLoadedId,
+    navigate,
+  ])
+
+  useEffect(() => {
     let ignore = false
     async function checkApi() {
       try {
@@ -445,7 +622,10 @@ export function App() {
     try {
       const response = await fetch(`${API_BASE_URL}/api/audit`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${window.sessionStorage.getItem('brandflight_token') ?? ''}`,
+        },
         body: JSON.stringify({
           brandProfileId: BRAND_PROFILE_ID,
           content: textToAudit,
@@ -499,6 +679,9 @@ export function App() {
 
       const response = await fetch(`${API_BASE_URL}/api/audit/image`, {
         method: 'POST',
+        headers: {
+          Authorization: `Bearer ${window.sessionStorage.getItem('brandflight_token') ?? ''}`,
+        },
         body: formData,
       })
 
@@ -657,7 +840,7 @@ export function App() {
     setAuthSession(null)
     setLoginPassword('')
     setLoginError(null)
-    setActiveView('workspace')
+    navigate('/login', { replace: true })
   }
 
   if (authChecking) {
@@ -814,6 +997,8 @@ export function App() {
       lastSavedDraftKeyRef.current = snapshotKey
       if (!isUpdating) {
         setEditingSubmissionId(data.submission.id)
+        setRouteDraftLoadedId(data.submission.id)
+        navigate(`/submissions/${encodeURIComponent(data.submission.id)}/edit`)
       }
       setSaveDraftMessage(
         `Draft ${isUpdating ? 'updated' : 'saved'} successfully. Status: ${data.submission.status}. ID: ${data.submission.id}`,
@@ -868,7 +1053,8 @@ export function App() {
     setAuditRestoredFromSubmission(true)
     setSaveDraftError(null)
     setSaveDraftMessage(null)
-    setActiveView('workspace')
+    setRouteDraftLoadedId(submission.id)
+    navigate(`/submissions/${encodeURIComponent(submission.id)}/edit`)
   }
 
   const handleStartNewDraft = () => {
@@ -884,6 +1070,27 @@ export function App() {
     setSaveDraftError(null)
     setSaveDraftMessage(null)
     setActiveView('workspace')
+  }
+
+  if (!activeView) {
+    return (
+      <div className="bf-auth-screen">
+        <div className="bf-auth-card">
+          <span className="bf-auth-kicker">BRANDFLIGHT</span>
+          <h1 className="bf-auth-title">Page not found</h1>
+          <p className="bf-auth-subtitle">
+            This BrandFlight URL does not match a known feature.
+          </p>
+          <button
+            className="bf-auth-submit"
+            type="button"
+            onClick={() => setActiveView('workspace')}
+          >
+            Return to Text Audit
+          </button>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -910,6 +1117,13 @@ export function App() {
               onClick={() => setActiveView('workspace')}
             >
               Audit Workspace
+            </button>
+            <button
+              type="button"
+              className={`bf-nav-link ${activeView === 'image' ? 'active' : ''}`}
+              onClick={() => setActiveView('image')}
+            >
+              Image Audit
             </button>
             <button
               type="button"
@@ -973,19 +1187,35 @@ export function App() {
 
       {/* Main Content */}
       <main className="bf-main">
-        {activeView === 'workspace' ? (
+        {activeView === 'workspace' || activeView === 'image' ? (
           <>
             {/* Page Heading & Preset Selector */}
             <section className="bf-page-bar">
               <div>
-                <h1 className="bf-page-title">Pre-Publication Content Audit</h1>
+                <h1 className="bf-page-title">
+                  {activeView === 'image'
+                    ? 'Campaign Image & Alt-Text Audit'
+                    : 'Pre-Publication Content Audit'}
+                </h1>
                 <p className="bf-page-subtitle">
-                  Verify draft copy against approved product facts, terminology rules, and tone
-                  guidelines before publishing.
+                  {activeView === 'image'
+                    ? 'Check campaign image colors against the approved brand palette and verify meaningful alt text.'
+                    : 'Verify draft copy against approved product facts, terminology rules, and tone guidelines before publishing.'}
                 </p>
+                {routeSubmissionId && (
+                  <button
+                    type="button"
+                    className="bf-btn-secondary"
+                    style={{ marginTop: '12px' }}
+                    onClick={() => navigate('/submissions', { replace: true })}
+                  >
+                    ← Back to Saved Submissions
+                  </button>
+                )}
               </div>
 
-              <div className="bf-scenario-picker">
+              {activeView === 'workspace' && (
+                <div className="bf-scenario-picker">
                 <span className="bf-scenario-label">Sample drafts:</span>
                 {SAMPLE_DRAFTS.map((sample) => (
                   <button
@@ -999,13 +1229,15 @@ export function App() {
                     {sample.label}
                   </button>
                 ))}
-              </div>
+                </div>
+              )}
             </section>
 
             {/* 5. Sticky Two-Column Audit Workspace */}
-            <div className="bf-workspace">
+            <div className={`bf-workspace ${activeView === 'image' ? 'bf-workspace-image-only' : ''}`} >
               {/* LEFT STICKY PANE: Editor + Compact Reference */}
               <div className="bf-left-sticky">
+                {activeView === 'workspace' && (
                 <form className="bf-card" onSubmit={handleAuditSubmit}>
                   <div className="bf-card-header">
                     <h2 className="bf-section-title">Draft Content</h2>
@@ -1139,7 +1371,7 @@ export function App() {
                     )}
                   </div>
                 </form>
-
+                )}
 
                 {/* Campaign image and alt-text audit */}
                 <form className="bf-card" onSubmit={handleImageAuditSubmit}>
@@ -1702,6 +1934,7 @@ export function App() {
           />
         )}
       </main>
+      <Outlet />
     </div>
   )
 }

@@ -127,6 +127,17 @@ async function loadAccessibleSubmission(
     return null;
   }
 
+  if (
+    user.role === "REVIEWER" &&
+    submission.status !== "IN_REVIEW" &&
+    submission.reviewerId !== user.id
+  ) {
+    res.status(403).json({
+      error: "Reviewers can only access submissions awaiting review or assigned to them.",
+    });
+    return null;
+  }
+
   return submission;
 }
 

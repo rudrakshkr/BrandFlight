@@ -76,7 +76,11 @@ export default function SavedSubmissionsPanel({
   }, [apiBaseUrl, token])
 
   useEffect(() => {
-    void loadSubmissions()
+    const timerId = window.setTimeout(() => {
+      void loadSubmissions()
+    }, 0)
+
+    return () => window.clearTimeout(timerId)
   }, [loadSubmissions])
 
   const handleOpen = async (item: SubmissionSummary) => {
