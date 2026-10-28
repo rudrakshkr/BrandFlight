@@ -46,6 +46,8 @@ export default function SavedSubmissionsPanel({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [openingId, setOpeningId] = useState<string | null>(null)
+  const [submittingId, setSubmittingId] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const loadSubmissions = useCallback(async () => {
     setLoading(true)
@@ -105,6 +107,40 @@ export default function SavedSubmissionsPanel({
     }
   }
 
+  const handleSubmitForReview = async (item: SubmissionSummary) => {
+    if (item.status !== 'DRAFT' && item.status !== 'CHANGES_REQUESTED') return
+
+    setSubmittingId(item.id)
+    setError(null)
+    setNotice(null)
+
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/api/submissions/${encodeURIComponent(item.id)}/submit`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      )
+
+      const data = (await response.json().catch(() => null)) as {
+        submission?: { id: string; status: string }
+        error?: string
+      } | null
+
+      if (!response.ok || !data?.submission) {
+        throw new Error(data?.error ?? `Submission failed (HTTP ${response.status}).`)
+      }
+
+      setNotice(`"${item.title}" was submitted for review.`)
+      await loadSubmissions()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to submit for review.')
+    } finally {
+      setSubmittingId(null)
+    }
+  }
+
   return (
     <section className="bf-saved-page">
       <div className="bf-saved-page-header">
@@ -133,6 +169,12 @@ export default function SavedSubmissionsPanel({
       {error && (
         <div className="bf-save-feedback error" role="alert">
           {error}
+        </div>
+      )}
+
+      {notice && (
+        <div className="bf-save-feedback success" role="status">
+          {notice}
         </div>
       )}
 
@@ -177,17 +219,31 @@ export default function SavedSubmissionsPanel({
 
                 <div className="bf-saved-card-footer">
                   {editable ? (
-                    <button
-                      type="button"
-                      className="bf-btn-secondary"
-                      disabled={openingId !== null}
-                      onClick={() => void handleOpen(item)}
-                    >
-                      {openingId === item.id ? 'Opening…' : 'Open Draft'}
-                    </button>
+                    <div className="bf-saved-card-actions">
+                      <button
+                        type="button"
+                        className="bf-btn-secondary"
+                        disabled={openingId !== null || submittingId !== null}
+                        onClick={() => void handleOpen(item)}
+                      >
+                        {openingId === item.id ? 'Opening…' : 'Open Draft'}
+                      </button>
+                      <button
+                        type="button"
+                        className="bf-btn-primary"
+                        disabled={openingId !== null || submittingId !== null}
+                        onClick={() => void handleSubmitForReview(item)}
+                      >
+                        {submittingId === item.id ? 'Submitting…' : 'Submit for Review'}
+                      </button>
+                    </div>
                   ) : (
                     <span className="bf-saved-readonly">
-                      Editing unavailable in this view
+                      {item.status === 'IN_REVIEW'
+                        ? 'Awaiting reviewer decision'
+                        : item.status === 'APPROVED'
+                          ? 'Approved'
+                          : 'Editing unavailable in this view'}
                     </span>
                   )}
                 </div>

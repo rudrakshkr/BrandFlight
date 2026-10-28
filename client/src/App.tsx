@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback, useMemo, useRef, type SubmitEvent, ty
 import './App.css'
 import RulebookPanel, { type BrandProfileData } from './RulebookPanel'
 import SavedSubmissionsPanel, { type SubmissionDetail } from './SavedSubmissionsPanel'
+import ReviewQueuePanel from './ReviewQueuePanel'
 
 type RuleCategory = 'TONE' | 'TERMINOLOGY' | 'CLAIM' | 'VISUAL' | 'ACCESSIBILITY'
 type FindingSeverity = 'INFO' | 'WARNING' | 'ERROR'
-type ActiveView = 'workspace' | 'rulebook' | 'submissions'
+type ActiveView = 'workspace' | 'rulebook' | 'submissions' | 'review'
 type AuthRole = 'CREATOR' | 'REVIEWER' | 'MANAGER'
 
 interface AuthUser {
@@ -917,13 +918,21 @@ export function App() {
             >
               Brand Rulebook &amp; Facts
             </button>
-            {authSession.user.role === 'CREATOR' && (
+            {authSession.user.role === 'CREATOR' ? (
               <button
                 type="button"
                 className={`bf-nav-link ${activeView === 'submissions' ? 'active' : ''}`}
                 onClick={() => setActiveView('submissions')}
               >
                 Saved Submissions
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={`bf-nav-link ${activeView === 'review' ? 'active' : ''}`}
+                onClick={() => setActiveView('review')}
+              >
+                Review Queue
               </button>
             )}
           </nav>
@@ -1679,12 +1688,17 @@ export function App() {
             onBrandLoaded={setBrandProfile}
             onBack={() => setActiveView('workspace')}
           />
-        ) : (
+        ) : activeView === 'submissions' && authSession.user.role === 'CREATOR' ? (
           <SavedSubmissionsPanel
             apiBaseUrl={API_BASE_URL}
             token={authSession.token}
             onOpenDraft={handleOpenSavedDraft}
             onNewDraft={handleStartNewDraft}
+          />
+        ) : (
+          <ReviewQueuePanel
+            apiBaseUrl={API_BASE_URL}
+            token={authSession.token}
           />
         )}
       </main>
