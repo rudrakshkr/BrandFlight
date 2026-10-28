@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { hash } from "bcryptjs";
 import { PrismaClient } from "../generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 
@@ -8,7 +9,57 @@ const adapter = new PrismaPg({
 
 const prisma = new PrismaClient({ adapter });
 
+async function seedDemoUsers() {
+  const demoUsers = [
+    {
+      name: "Demo Creator",
+      email: "creator@brandflight.demo",
+      role: "CREATOR" as const,
+      password: process.env.DEMO_CREATOR_PASSWORD,
+    },
+    {
+      name: "Demo Manager",
+      email: "manager@brandflight.demo",
+      role: "MANAGER" as const,
+      password: process.env.DEMO_MANAGER_PASSWORD,
+    },
+    {
+      name: "Demo Reviewer",
+      email: "reviewer@brandflight.demo",
+      role: "REVIEWER" as const,
+      password: process.env.DEMO_REVIEWER_PASSWORD,
+    },
+  ];
+
+  for (const demoUser of demoUsers) {
+    if (!demoUser.password || demoUser.password.length < 16) {
+      throw new Error(
+        `Set a strong ${demoUser.role} demo password in server/.env before seeding.`,
+      );
+    }
+
+    const passwordHash = await hash(demoUser.password, 12);
+
+    await prisma.user.upsert({
+      where: { email: demoUser.email },
+      update: {
+        name: demoUser.name,
+        role: demoUser.role,
+      },
+      create: {
+        name: demoUser.name,
+        email: demoUser.email,
+        role: demoUser.role,
+        passwordHash,
+      },
+    });
+  }
+
+  console.log("Demo creator, manager, and reviewer accounts are ready.");
+}
+
 async function main() {
+  await seedDemoUsers();
   const brand = await prisma.brandProfile.upsert({
     where: { id: "brandflight-demo" },
     update: {},
