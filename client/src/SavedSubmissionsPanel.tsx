@@ -32,6 +32,8 @@ export interface SubmissionDetail {
     message: string
     evidence: string | null
     suggestion: string | null
+    originalSpan: string | null
+    suggestedSpan: string | null
     ruleCode: string | null
     confidence: string | null
   }>

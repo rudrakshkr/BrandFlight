@@ -19,6 +19,8 @@ export type SemanticFinding = {
   title: string;
   message: string;
   evidence: string;
+  originalSpan: string;
+  suggestedSpan: string;
   suggestion: string;
   ruleCode: string;
   confidence: string;
@@ -71,6 +73,8 @@ export async function runSemanticAudit(
                 title: { type: "STRING" },
                 message: { type: "STRING" },
                 evidence: { type: "STRING" },
+                originalSpan: { type: "STRING" },
+                suggestedSpan: { type: "STRING" },
                 suggestion: { type: "STRING" },
                 ruleCode: { type: "STRING" },
                 confidence: { type: "STRING" },
@@ -81,6 +85,8 @@ export async function runSemanticAudit(
                 "title",
                 "message",
                 "evidence",
+                "originalSpan",
+                "suggestedSpan",
                 "suggestion",
                 "ruleCode",
                 "confidence",
@@ -98,11 +104,13 @@ export async function runSemanticAudit(
         3. Never invent brand rules, approved facts, or rule identifiers.
         4. Use only ruleCode or factCode values provided in the input.
         5. The evidence field must be an exact substring copied from the content.
-        6. If a claim cannot be verified, say it needs human review;
+        6. originalSpan must exactly equal evidence.
+        7. suggestedSpan must be a concise, safe, drop-in replacement for originalSpan that preserves intent and follows the supplied rules. If no safe direct replacement is grounded, return an empty string for suggestedSpan. Never put explanatory prose in suggestedSpan.
+        8. If a claim cannot be verified, say it needs human review;
         do not automatically declare it false.
-        7. Suggest corrections that preserve the creator's intent.
-        8. Return an empty findings array when no meaningful issue exists.
-        9. Return JSON matching the required schema, without markdown.
+        9. Keep the human-readable suggestion field as guidance, separate from the direct replacement field.
+        10. Return an empty findings array when no meaningful issue exists.
+        11. Return JSON matching the required schema, without markdown.
         `,
     },
   });
@@ -138,6 +146,13 @@ export async function runSemanticAudit(
       typeof item.evidence === "string" &&
       item.evidence.length > 0 &&
       content.includes(item.evidence) &&
+      "originalSpan" in item &&
+      typeof item.originalSpan === "string" &&
+      item.originalSpan === item.evidence &&
+      content.includes(item.originalSpan) &&
+      "suggestedSpan" in item &&
+      typeof item.suggestedSpan === "string" &&
+      item.suggestedSpan.length <= 2000 &&
       "suggestion" in item &&
       typeof item.suggestion === "string" &&
       "ruleCode" in item &&

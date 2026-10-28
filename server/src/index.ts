@@ -69,6 +69,8 @@ app.post("/api/audit", requireAuth, async (req, res) => {
             title: rule.title,
             message: `Content matched rule ${rule.ruleCode}: ${rule.description}`,
             evidence: match,
+            originalSpan: match,
+            suggestedSpan: "",
             suggestion: `Review or replace "${match}" with appropriate wording.`,
             ruleCode: rule.ruleCode,
             confidence: "Deterministic Match",
@@ -112,6 +114,8 @@ app.post("/api/audit", requireAuth, async (req, res) => {
         message:
           "This numerical expression did not match an approved fact expression. Verify it before publication.",
         evidence: claim,
+        originalSpan: claim,
+        suggestedSpan: "",
         suggestion: "Check the approved product facts before using this claim.",
         ruleCode: "CLAIM-01",
         confidence: "Needs Human Review",

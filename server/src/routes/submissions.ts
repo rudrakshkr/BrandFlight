@@ -26,6 +26,8 @@ type PersistedFinding = {
   message: string;
   evidence: string | null;
   suggestion: string | null;
+  originalSpan: string | null;
+  suggestedSpan: string | null;
   ruleCode: string | null;
   confidence: string | null;
 };
@@ -75,6 +77,8 @@ function parseFindings(value: unknown): PersistedFinding[] | null {
       message: item.message.trim(),
       evidence: optionalText("evidence"),
       suggestion: optionalText("suggestion"),
+      originalSpan: optionalText("originalSpan"),
+      suggestedSpan: optionalText("suggestedSpan"),
       ruleCode: optionalText("ruleCode"),
       confidence: optionalText("confidence"),
     });
