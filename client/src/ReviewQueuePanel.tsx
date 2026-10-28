@@ -60,7 +60,8 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [commentText, setCommentText] = useState('')
-  const [decisionNote, setDecisionNote] = useState('')
+  const [queueView, setQueueView] = useState<'IN_REVIEW' | 'HISTORY'>('IN_REVIEW')
+  const [pendingDecision, setPendingDecision] = useState<Decision | null>(null)
 
   const loadQueue = useCallback(async () => {
     setLoading(true)
@@ -79,7 +80,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
         throw new Error(data?.error ?? `Could not load queue (HTTP ${response.status}).`)
       }
 
-      setQueue(data.submissions.filter((item) => item.status === 'IN_REVIEW'))
+      setQueue(data.submissions.filter((item) => item.status !== 'DRAFT'))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load review queue.')
     } finally {
@@ -113,14 +114,8 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
       if (!response.ok || !data?.submission) {
         throw new Error(data?.error ?? `Could not open submission (HTTP ${response.status}).`)
       }
-      if (data.submission.status !== 'IN_REVIEW') {
-        await loadQueue()
-        throw new Error('This submission is no longer awaiting review. The queue was refreshed.')
-      }
-
       setSelected(data.submission)
       setCommentText('')
-      setDecisionNote('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not open submission.')
     } finally {
@@ -168,11 +163,22 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
     }
   }
 
+  const openDecisionConfirmation = (status: Decision) => {
+    if (!selected || busy) return
+    if (status === 'CHANGES_REQUESTED' && !commentText.trim()) {
+      setError('Add a comment explaining the requested changes.')
+      return
+    }
+    setError(null)
+    setNotice(null)
+    setPendingDecision(status)
+  }
+
   const decide = async (status: Decision) => {
     if (!selected || busy) return
 
-    if (status === 'CHANGES_REQUESTED' && !decisionNote.trim()) {
-      setError('Add a note explaining the requested changes.')
+    if (status === 'CHANGES_REQUESTED' && !commentText.trim()) {
+      setError('Add a comment explaining the requested changes.')
       return
     }
 
@@ -192,7 +198,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
           },
           body: JSON.stringify({
             status,
-            note: decisionNote.trim(),
+            note: commentText.trim(),
           }),
         },
       )
@@ -206,18 +212,34 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
       }
 
       setSelected(null)
-      setDecisionNote('')
       setCommentText('')
+      setPendingDecision(null)
       setNotice(status === 'APPROVED'
         ? `"${title}" was approved.`
         : `"${title}" was returned for changes.`)
       await loadQueue()
     } catch (err) {
+      setPendingDecision(null)
       setError(err instanceof Error ? err.message : 'Could not record decision.')
     } finally {
       setBusy(false)
     }
   }
+
+  useEffect(() => {
+    if (!pendingDecision || busy) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPendingDecision(null)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [pendingDecision, busy])
+
+  const visibleQueue = queue.filter((item) => queueView === 'IN_REVIEW'
+    ? item.status === 'IN_REVIEW'
+    : item.status === 'APPROVED' || item.status === 'CHANGES_REQUESTED')
+  const reviewCount = queue.filter((item) => item.status === 'IN_REVIEW').length
+  const historyCount = queue.filter((item) => item.status === 'APPROVED' || item.status === 'CHANGES_REQUESTED').length
 
   return (
     <section className="bf-review-page">
@@ -225,7 +247,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
         <div>
           <h1 className="bf-page-title">Review Queue</h1>
           <p className="bf-page-subtitle">
-            Review submitted campaign copy, comment on issues, and record a decision.
+            Review pending campaigns, then find past comments and decisions under Review history.
           </p>
         </div>
         <button
@@ -241,21 +263,93 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
       {error && <div className="bf-save-feedback error" role="alert">{error}</div>}
       {notice && <div className="bf-save-feedback success" role="status">{notice}</div>}
 
+      {pendingDecision && selected && (
+        <div
+          className="bf-decision-confirmation-overlay"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !busy) setPendingDecision(null)
+          }}
+        >
+          <section
+            className="bf-decision-confirmation"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="bf-decision-confirmation-title"
+            aria-describedby="bf-decision-confirmation-description"
+          >
+            <span className={`bf-decision-confirmation-mark ${pendingDecision === 'APPROVED' ? 'approve' : 'changes'}`} aria-hidden="true">
+              {pendingDecision === 'APPROVED' ? '✓' : '↺'}
+            </span>
+            <h2 id="bf-decision-confirmation-title">
+              {pendingDecision === 'APPROVED' ? 'Approve this campaign?' : 'Request changes?'}
+            </h2>
+            <p id="bf-decision-confirmation-description">
+              {pendingDecision === 'APPROVED'
+                ? `This will mark “${selected.title}” as approved and complete the review.`
+                : `This will return “${selected.title}” to the creator so they can revise and resubmit it.`}
+            </p>
+            {pendingDecision === 'CHANGES_REQUESTED' && (
+              <div className="bf-decision-confirmation-note">
+                <strong>Feedback to the creator</strong>
+                <p>{commentText.trim()}</p>
+              </div>
+            )}
+            {pendingDecision === 'APPROVED' && commentText.trim() && (
+              <div className="bf-decision-confirmation-note">
+                <strong>Comment already in the thread</strong>
+                <p>Your comment will remain visible in the campaign discussion.</p>
+              </div>
+            )}
+            <div className="bf-decision-confirmation-actions">
+              <button
+                type="button"
+                className="bf-btn-secondary"
+                autoFocus
+                disabled={busy}
+                onClick={() => setPendingDecision(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={pendingDecision === 'APPROVED' ? 'bf-btn-primary' : 'bf-review-request'}
+                disabled={busy}
+                onClick={() => void decide(pendingDecision)}
+              >
+                {busy
+                  ? 'Saving…'
+                  : pendingDecision === 'APPROVED'
+                    ? 'Confirm Approval'
+                    : 'Confirm Request Changes'}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       <div className="bf-review-layout">
         <aside className="bf-review-list">
           <div className="bf-review-list-header">
-            <h2>Awaiting review</h2>
-            <span>{queue.length}</span>
+            <h2>{queueView === 'IN_REVIEW' ? 'Awaiting review' : 'Review history'}</h2>
+            <span>{visibleQueue.length}</span>
+          </div>
+          <div className="bf-review-tabs" aria-label="Review queue views">
+            <button type="button" className={queueView === 'IN_REVIEW' ? 'active' : ''} aria-pressed={queueView === 'IN_REVIEW'} onClick={() => setQueueView('IN_REVIEW')}>
+              Awaiting review <span>{reviewCount}</span>
+            </button>
+            <button type="button" className={queueView === 'HISTORY' ? 'active' : ''} aria-pressed={queueView === 'HISTORY'} onClick={() => setQueueView('HISTORY')}>
+              Review history <span>{historyCount}</span>
+            </button>
           </div>
 
-          {loading && queue.length === 0 ? (
-            <p className="bf-review-empty">Loading queue…</p>
-          ) : queue.length === 0 ? (
+          {loading && visibleQueue.length === 0 ? (
+            <p className="bf-review-empty">Loading campaigns…</p>
+          ) : visibleQueue.length === 0 ? (
             <div className="bf-review-empty">
-              <h3>Queue is clear</h3>
-              <p>Submissions sent for review will appear here.</p>
+              <h3>{queueView === 'IN_REVIEW' ? 'Queue is clear' : 'No review history yet'}</h3>
+              <p>{queueView === 'IN_REVIEW' ? 'New submissions awaiting a decision will appear here.' : 'Approved campaigns and campaigns returned for changes will appear here.'}</p>
             </div>
-          ) : queue.map((item) => (
+          ) : visibleQueue.map((item) => (
             <button
               type="button"
               key={item.id}
@@ -263,7 +357,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
               disabled={openingId !== null || busy}
               onClick={() => void openSubmission(item)}
             >
-              <span className="bf-review-queue-status">IN REVIEW · {item._count.findings} findings</span>
+              <span className="bf-review-queue-status">{item.status.replace(/_/g, ' ')} · {item._count.findings} findings · {item._count.comments} comments</span>
               <strong>{item.title}</strong>
               <span className="bf-review-small">
                 {item.creator?.name ?? 'Creator'} · {item.brandProfile?.name ?? 'Brand'}
@@ -282,7 +376,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
           ) : (
             <>
               <header className="bf-review-detail-header">
-                <span className="bf-review-queue-status">IN REVIEW</span>
+                <span className="bf-review-queue-status">{selected.status.replace(/_/g, ' ')}</span>
                 <h2>{selected.title}</h2>
                 <p>
                   {selected.creator?.name ?? 'Creator'}
@@ -399,9 +493,9 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
               </section>
 
               <section className="bf-review-section">
-                <h3>Comments ({selected.comments.length})</h3>
+                <h3>Comments &amp; activity ({selected.comments.length})</h3>
                 {selected.comments.length === 0 ? (
-                  <p className="bf-review-small">No comments yet.</p>
+                  <p className="bf-review-small">No comments yet. Comments and decision notes will be kept together here.</p>
                 ) : selected.comments.map((comment) => (
                   <article className="bf-review-comment" key={comment.id}>
                     <div className="bf-review-comment-meta">
@@ -413,59 +507,37 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
                   </article>
                 ))}
 
-                <form className="bf-review-comment-form" onSubmit={(event) => {
-                  event.preventDefault()
-                  void addComment()
-                }}>
-                  <label htmlFor="bf-review-comment">Add comment</label>
-                  <textarea
-                    id="bf-review-comment"
-                    rows={3}
-                    maxLength={2000}
-                    value={commentText}
-                    onChange={(event) => setCommentText(event.target.value)}
-                    placeholder="Give feedback or ask a question…"
-                    disabled={busy}
-                  />
-                  <button className="bf-btn-secondary" type="submit" disabled={busy || !commentText.trim()}>
-                    {busy ? 'Saving…' : 'Post Comment'}
-                  </button>
-                </form>
-              </section>
-
-              <section className="bf-review-section bf-review-decision">
-                <h3>Review decision</h3>
-                <label htmlFor="bf-review-note">
-                  Decision note
-                  <span> — required for Request Changes; saved as a comment.</span>
-                </label>
-                <textarea
-                  id="bf-review-note"
-                  rows={3}
-                  maxLength={2000}
-                  value={decisionNote}
-                  onChange={(event) => setDecisionNote(event.target.value)}
-                  placeholder="Explain the decision or list required changes…"
-                  disabled={busy}
-                />
-                <div className="bf-review-decision-buttons">
-                  <button
-                    type="button"
-                    className="bf-review-request"
-                    disabled={busy}
-                    onClick={() => void decide('CHANGES_REQUESTED')}
-                  >
-                    {busy ? 'Saving…' : 'Request Changes'}
-                  </button>
-                  <button
-                    type="button"
-                    className="bf-btn-primary"
-                    disabled={busy}
-                    onClick={() => void decide('APPROVED')}
-                  >
-                    {busy ? 'Saving…' : 'Approve'}
-                  </button>
-                </div>
+                {selected.status === 'IN_REVIEW' ? (
+                  <form className="bf-review-comment-form" onSubmit={(event) => {
+                    event.preventDefault()
+                    void addComment()
+                  }}>
+                    <label htmlFor="bf-review-comment">Comment or decision note</label>
+                    <textarea
+                      id="bf-review-comment"
+                      rows={3}
+                      maxLength={2000}
+                      value={commentText}
+                      onChange={(event) => setCommentText(event.target.value)}
+                      placeholder="Post a comment, or explain the changes needed before requesting changes…"
+                      disabled={busy}
+                    />
+                    <p className="bf-review-note-hint">Post Comment saves a discussion note. Request Changes saves this text as the required feedback. An optional note entered before approval is also kept in the thread.</p>
+                    <div className="bf-review-decision-buttons">
+                      <button className="bf-btn-secondary" type="submit" disabled={busy || !commentText.trim()}>
+                        {busy ? 'Saving…' : 'Post Comment'}
+                      </button>
+                      <button type="button" className="bf-review-request" disabled={busy || !commentText.trim()} onClick={() => openDecisionConfirmation('CHANGES_REQUESTED')}>
+                        {busy ? 'Saving…' : 'Request Changes'}
+                      </button>
+                      <button type="button" className="bf-btn-primary" disabled={busy} onClick={() => openDecisionConfirmation('APPROVED')}>
+                        {busy ? 'Saving…' : 'Approve'}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <p className="bf-review-note-hint">This review is complete. Its comments remain available here for reference.</p>
+                )}
               </section>
             </>
           )}

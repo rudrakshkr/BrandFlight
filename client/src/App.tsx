@@ -5,10 +5,11 @@ import type { ImageAuditData as ImageAuditApiResponse } from './types/imageAudit
 import RulebookPanel, { type BrandProfileData } from './RulebookPanel'
 import SavedSubmissionsPanel, { type SubmissionDetail } from './SavedSubmissionsPanel'
 import ReviewQueuePanel from './ReviewQueuePanel'
+import ManagerDashboard from './ManagerDashboard'
 
 type RuleCategory = 'TONE' | 'TERMINOLOGY' | 'CLAIM' | 'VISUAL' | 'ACCESSIBILITY'
 type FindingSeverity = 'INFO' | 'WARNING' | 'ERROR'
-type ActiveView = 'workspace' | 'image' | 'rulebook' | 'submissions' | 'review'
+type ActiveView = 'workspace' | 'image' | 'rulebook' | 'submissions' | 'review' | 'manager'
 
 const ROUTE_BY_VIEW: Record<ActiveView, string> = {
   workspace: '/audit/text',
@@ -16,6 +17,7 @@ const ROUTE_BY_VIEW: Record<ActiveView, string> = {
   rulebook: '/rulebook',
   submissions: '/submissions',
   review: '/review',
+  manager: '/manager',
 }
 
 const VIEW_BY_PATH: Record<string, ActiveView> = {
@@ -26,6 +28,7 @@ const VIEW_BY_PATH: Record<string, ActiveView> = {
   '/rulebook': 'rulebook',
   '/submissions': 'submissions',
   '/review': 'review',
+  '/manager': 'manager',
 }
 type AuthRole = 'CREATOR' | 'REVIEWER' | 'MANAGER'
 
@@ -40,7 +43,7 @@ interface AuthSession {
   token: string
   user: AuthUser
 }
-type CategoryFilter = 'ALL' | 'OPEN' | 'CLAIM' | 'TERMINOLOGY' | 'TONE'
+type CategoryFilter = 'ALL' | 'CLAIM' | 'TERMINOLOGY' | 'TONE'
 
 interface RawAuditFinding {
   category: RuleCategory
@@ -361,12 +364,18 @@ export function App() {
     routeSubmissionId = null
   }
 
+  const requestedEditorView = new URLSearchParams(location.search).get('view')
   const activeView = routeSubmissionId
-    ? 'workspace'
+    ? requestedEditorView === 'image' ? 'image' : 'workspace'
     : VIEW_BY_PATH[routePath]
   const setActiveView = useCallback((view: ActiveView) => {
+    if (routeSubmissionId && (view === 'workspace' || view === 'image')) {
+      const editorPath = `/submissions/${encodeURIComponent(routeSubmissionId)}/edit`
+      navigate(view === 'image' ? `${editorPath}?view=image` : editorPath)
+      return
+    }
     navigate(ROUTE_BY_VIEW[view])
-  }, [navigate])
+  }, [navigate, routeSubmissionId])
 
   const [authSession, setAuthSession] = useState<AuthSession | null>(null)
   const [authChecking, setAuthChecking] = useState(
@@ -377,6 +386,7 @@ export function App() {
   const [loginBusy, setLoginBusy] = useState(false)
   const [loginError, setLoginError] = useState<string | null>(null)
   const [editingSubmissionId, setEditingSubmissionId] = useState<string | null>(null)
+  const [submissionComments, setSubmissionComments] = useState<SubmissionDetail['comments']>([])
   const [routeDraftLoadedId, setRouteDraftLoadedId] = useState<string | null>(null)
   const [brandProfile, setBrandProfile] = useState<BrandProfileData | null>(null)
   const [imageFile, setImageFile] = useState<File | null>(null)
@@ -406,18 +416,12 @@ export function App() {
   const saveInProgressRef = useRef(false)
   const lastSavedDraftKeyRef = useRef<string | null>(null)
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('ALL')
-
-  const [resolvedGroups, setResolvedGroups] = useState<Record<string, string>>({})
-  const [reviewerNote, setReviewerNote] = useState<string>('')
-  const [sessionDecision, setSessionDecision] = useState<{
-    status: 'NONE' | 'APPROVED' | 'CHANGES_REQUESTED'
-    note: string
-    timestamp: string | null
-  }>({
-    status: 'NONE',
-    note: '',
-    timestamp: null,
-  })
+  const [guidanceCopyFeedback, setGuidanceCopyFeedback] = useState<{
+    groupId: string
+    message: string
+    isError: boolean
+  } | null>(null)
+  const [auditedImageAltText, setAuditedImageAltText] = useState<string | null>(null)
 
   useEffect(() => {
     const token = window.sessionStorage.getItem('brandflight_token')
@@ -469,31 +473,38 @@ export function App() {
       return
     }
 
+    const roleHomePath =
+      authSession.user.role === 'CREATOR'
+        ? ROUTE_BY_VIEW.workspace
+        : authSession.user.role === 'REVIEWER'
+          ? ROUTE_BY_VIEW.review
+          : ROUTE_BY_VIEW.manager
+
     if (routePath === '/' || routePath === '/login') {
-      navigate('/audit/text', { replace: true })
+      navigate(roleHomePath, { replace: true })
       return
     }
 
     if (routeSubmissionId && authSession.user.role !== 'CREATOR') {
-      navigate('/audit/text', { replace: true })
+      navigate(roleHomePath, { replace: true })
       return
     }
 
     if (!activeView) return
 
-    if (
-      activeView === 'submissions' &&
-      authSession.user.role !== 'CREATOR'
-    ) {
-      navigate('/audit/text', { replace: true })
-      return
-    }
-
-    if (
-      activeView === 'review' &&
+    const canAccessView =
       authSession.user.role === 'CREATOR'
-    ) {
-      navigate('/audit/text', { replace: true })
+        ? activeView === 'workspace' ||
+          activeView === 'image' ||
+          activeView === 'submissions'
+        : authSession.user.role === 'REVIEWER'
+          ? activeView === 'review'
+          : activeView === 'manager' ||
+            activeView === 'review' ||
+            activeView === 'rulebook'
+
+    if (!canAccessView) {
+      navigate(roleHomePath, { replace: true })
     }
   }, [authChecking, authSession, activeView, navigate, routePath, routeSubmissionId])
 
@@ -562,6 +573,8 @@ export function App() {
         if (cancelled) return
 
         setEditingSubmissionId(submission.id)
+
+        setSubmissionComments(submission.comments ?? [])
         lastSavedDraftKeyRef.current = restoredSnapshotKey
         setSelectedSampleId('')
         setDraftTitle(submission.title)
@@ -569,6 +582,9 @@ export function App() {
         setContent(submission.contentText)
         setImageFile(null)
         setImageAltText(submission.imageAltText ?? '')
+        setAuditedImageAltText(
+          submission.imageAuditData ? (submission.imageAltText ?? '') : null,
+        )
         setImageAuditResult(
           submission.imageAuditData
             ? {
@@ -584,7 +600,6 @@ export function App() {
         )
         setImageAuditError(null)
         setCategoryFilter('ALL')
-        setResolvedGroups({})
         setAuditError(null)
         setAuditResult({
           brand: submission.brandProfile,
@@ -643,8 +658,7 @@ export function App() {
     setAuditRestoredFromSubmission(false)
     setIsAuditing(true)
     setAuditError(null)
-    setResolvedGroups({})
-    setSessionDecision({ status: 'NONE', note: '', timestamp: null })
+    setGuidanceCopyFeedback(null)
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/audit`, {
@@ -697,11 +711,12 @@ export function App() {
     setIsImageAuditing(true)
     setImageAuditError(null)
     setImageAuditResult(null)
+    setAuditedImageAltText(null)
 
     try {
       const formData = new FormData()
       formData.append('brandProfileId', BRAND_PROFILE_ID)
-      formData.append('altText', imageAltText)
+      formData.append('altText', imageAltText.trim())
       formData.append('image', imageFile)
 
       const response = await fetch(`${API_BASE_URL}/api/audit/image`, {
@@ -727,6 +742,8 @@ export function App() {
       }
 
       setImageAuditResult(data as ImageAuditApiResponse)
+      setImageAltText(imageAltText.trim())
+      setAuditedImageAltText(imageAltText.trim())
     } catch (err) {
       setImageAuditError(
         err instanceof Error ? err.message : 'Unable to audit this image.',
@@ -741,26 +758,21 @@ export function App() {
     [auditResult],
   )
 
-  const openConsolidatedCount = useMemo(
-    () => consolidatedFindings.filter((g) => !resolvedGroups[g.id]).length,
-    [consolidatedFindings, resolvedGroups],
+  const reviewerComments = submissionComments.filter(
+    (comment) => comment.author?.role === 'REVIEWER' || comment.author?.role === 'MANAGER',
   )
 
   const activeEvidences = useMemo(
-    () =>
-      consolidatedFindings
-        .filter((g) => !resolvedGroups[g.id])
-        .flatMap((g) => g.evidences),
-    [consolidatedFindings, resolvedGroups],
+    () => consolidatedFindings.flatMap((group) => group.evidences),
+    [consolidatedFindings],
   )
 
   const filteredFindings = useMemo(() => {
     return consolidatedFindings.filter((group) => {
       if (categoryFilter === 'ALL') return true
-      if (categoryFilter === 'OPEN') return !resolvedGroups[group.id]
       return group.category === categoryFilter
     })
-  }, [consolidatedFindings, categoryFilter, resolvedGroups])
+  }, [consolidatedFindings, categoryFilter])
 
   const handleSelectScenario = (sample: SampleDraft) => {
     setEditingSubmissionId(null)
@@ -790,38 +802,34 @@ export function App() {
     }
   }
 
-  const handleTagEvidenceInEditor = (group: ConsolidatedFinding) => {
-    const primaryEvidence = group.evidences[0]
-    if (!primaryEvidence || !content.includes(primaryEvidence)) return
-    setContent((prev) => prev.replace(primaryEvidence, `[REVISE: ${primaryEvidence}]`))
-    setResolvedGroups((prev) => ({
-      ...prev,
-      [group.id]: 'Tagged in draft',
-    }))
-  }
+  const handleCopyGuidance = async (group: ConsolidatedFinding) => {
+    const guidance = group.suggestion.trim()
+    if (!guidance) {
+      setGuidanceCopyFeedback({
+        groupId: group.id,
+        message: 'No guidance is available to copy for this finding.',
+        isError: true,
+      })
+      return
+    }
 
-  const handleToggleResolved = (groupId: string, label: string) => {
-    setResolvedGroups((prev) => {
-      const next = { ...prev }
-      if (next[groupId]) {
-        delete next[groupId]
-      } else {
-        next[groupId] = label
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error('Clipboard access is unavailable in this browser context.')
       }
-      return next
-    })
-  }
-
-  const handleDecision = (status: 'APPROVED' | 'CHANGES_REQUESTED') => {
-    setSessionDecision({
-      status,
-      note:
-        reviewerNote.trim() ||
-        (status === 'APPROVED'
-          ? 'Approved for publication after preflight review.'
-          : 'Revisions requested to align claims and terminology with brand guidelines.'),
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    })
+      await navigator.clipboard.writeText(guidance)
+      setGuidanceCopyFeedback({
+        groupId: group.id,
+        message: 'Guidance copied. Edit the flagged copy, then re-run Preflight Audit.',
+        isError: false,
+      })
+    } catch {
+      setGuidanceCopyFeedback({
+        groupId: group.id,
+        message: 'Clipboard access failed. Select and copy the guidance text above.',
+        isError: true,
+      })
+    }
   }
 
   const handleLogin = async (event: SubmitEvent<HTMLFormElement>) => {
@@ -852,7 +860,16 @@ export function App() {
       window.sessionStorage.setItem('brandflight_token', data.token)
       setAuthSession({ token: data.token, user: data.user })
       setLoginPassword('')
-      setActiveView('workspace')
+      navigate(
+        ROUTE_BY_VIEW[
+          data.user.role === 'CREATOR'
+            ? 'workspace'
+            : data.user.role === 'REVIEWER'
+              ? 'review'
+              : 'manager'
+        ],
+        { replace: true },
+      )
     } catch (error) {
       setLoginError(
         error instanceof Error ? error.message : 'Unable to log in.',
@@ -981,12 +998,9 @@ export function App() {
       return
     }
 
-    if (
-      imageAuditResult &&
-      imageAuditResult.image.altTextLength !== imageAltText.length
-    ) {
+    if (imageAuditResult && auditedImageAltText !== imageAltText) {
       setSaveDraftError(
-        'The alt text changed after its image audit. Re-select the image and run the image audit again before saving.',
+        'The alt text changed after its image audit. Run the image audit again before saving.',
       )
       return
     }
@@ -1105,19 +1119,23 @@ export function App() {
     })
 
     setEditingSubmissionId(submission.id)
+
+    setSubmissionComments(submission.comments ?? [])
     lastSavedDraftKeyRef.current = restoredSnapshotKey
     setSelectedSampleId('')
     setDraftTitle(submission.title)
     setContent(submission.contentText)
     setImageFile(null)
     setImageAltText(submission.imageAltText ?? '')
+    setAuditedImageAltText(
+      submission.imageAuditData ? (submission.imageAltText ?? '') : null,
+    )
     setImageAuditResult(submission.imageAuditData ?? null)
         setImagePreviewUrl(
           submission.imageUrl ?? submission.imageAuditData?.asset?.secureUrl ?? null,
         )
     setImageAuditError(null)
     setCategoryFilter('ALL')
-    setResolvedGroups({})
     setAuditError(null)
     setAuditResult({
       brand: submission.brandProfile,
@@ -1135,6 +1153,7 @@ export function App() {
 
   const handleStartNewDraft = () => {
     setEditingSubmissionId(null)
+    setSubmissionComments([])
     lastSavedDraftKeyRef.current = null
     setSelectedSampleId('')
     setDraftTitle('Untitled campaign')
@@ -1143,6 +1162,7 @@ export function App() {
     setImageFile(null)
     setImageAltText('')
     setImageAuditResult(null)
+    setAuditedImageAltText(null)
     setImageAuditError(null)
     setAuditResult(null)
     setAuditedContent(null)
@@ -1191,36 +1211,33 @@ export function App() {
           </div>
 
           <nav className="bf-header-nav" aria-label="Primary navigation">
-            <button
-              type="button"
-              className={`bf-nav-link ${activeView === 'workspace' ? 'active' : ''}`}
-              onClick={() => setActiveView('workspace')}
-            >
-              Audit Workspace
-            </button>
-            <button
-              type="button"
-              className={`bf-nav-link ${activeView === 'image' ? 'active' : ''}`}
-              onClick={() => setActiveView('image')}
-            >
-              Image Audit
-            </button>
-            <button
-              type="button"
-              className={`bf-nav-link ${activeView === 'rulebook' ? 'active' : ''}`}
-              onClick={() => setActiveView('rulebook')}
-            >
-              Brand Rulebook &amp; Facts
-            </button>
-            {authSession.user.role === 'CREATOR' ? (
-              <button
-                type="button"
-                className={`bf-nav-link ${activeView === 'submissions' ? 'active' : ''}`}
-                onClick={() => setActiveView('submissions')}
-              >
-                Saved Submissions
-              </button>
-            ) : (
+            {authSession.user.role === 'CREATOR' && (
+              <>
+                <button
+                  type="button"
+                  className={`bf-nav-link ${activeView === 'workspace' ? 'active' : ''}`}
+                  onClick={() => setActiveView('workspace')}
+                >
+                  Audit Workspace
+                </button>
+                <button
+                  type="button"
+                  className={`bf-nav-link ${activeView === 'image' ? 'active' : ''}`}
+                  onClick={() => setActiveView('image')}
+                >
+                  Image Audit
+                </button>
+                <button
+                  type="button"
+                  className={`bf-nav-link ${activeView === 'submissions' ? 'active' : ''}`}
+                  onClick={() => setActiveView('submissions')}
+                >
+                  Saved Submissions
+                </button>
+              </>
+            )}
+
+            {authSession.user.role === 'REVIEWER' && (
               <button
                 type="button"
                 className={`bf-nav-link ${activeView === 'review' ? 'active' : ''}`}
@@ -1228,6 +1245,32 @@ export function App() {
               >
                 Review Queue
               </button>
+            )}
+
+            {authSession.user.role === 'MANAGER' && (
+              <>
+                <button
+                  type="button"
+                  className={`bf-nav-link ${activeView === 'manager' ? 'active' : ''}`}
+                  onClick={() => setActiveView('manager')}
+                >
+                  Manager Console
+                </button>
+                <button
+                  type="button"
+                  className={`bf-nav-link ${activeView === 'review' ? 'active' : ''}`}
+                  onClick={() => setActiveView('review')}
+                >
+                  Review Queue
+                </button>
+                <button
+                  type="button"
+                  className={`bf-nav-link ${activeView === 'rulebook' ? 'active' : ''}`}
+                  onClick={() => setActiveView('rulebook')}
+                >
+                  Brand Rulebook &amp; Facts
+                </button>
+              </>
             )}
           </nav>
 
@@ -1294,7 +1337,7 @@ export function App() {
                 )}
               </div>
 
-              {activeView === 'workspace' && (
+              {activeView === 'workspace' && !routeSubmissionId && !editingSubmissionId && (
                 <div className="bf-scenario-picker">
                 <span className="bf-scenario-label">Sample drafts:</span>
                 {SAMPLE_DRAFTS.map((sample) => (
@@ -1311,6 +1354,65 @@ export function App() {
                 ))}
                 </div>
               )}
+            </section>
+
+            <section className="bf-campaign-bundle" aria-label="Campaign bundle workflow">
+              <div className="bf-campaign-bundle-intro">
+                <span className="bf-campaign-bundle-eyebrow">ONE CAMPAIGN · TWO AUDITS</span>
+                <h2>Campaign bundle</h2>
+                <p>
+                  Save text and image checks together in one submission. Reviewers and managers
+                  can then inspect the copy, image preview, alt text, palette checks, and findings
+                  from the same Review Queue record.
+                </p>
+                <p className="bf-campaign-bundle-note">
+                  Switching tabs keeps the current workspace state. Save the draft, then open Saved
+                  Submissions and choose Submit for Review. Unsaved changes are not persisted.
+                </p>
+              </div>
+              <div className="bf-campaign-bundle-statuses">
+                <div className="bf-campaign-status-item">
+                  <span>Copy audit</span>
+                  <strong className={auditResult && auditedContent === content ? 'is-ready' : 'is-pending'}>
+                    {auditResult && auditedContent === content ? 'Ready to save' : 'Run audit'}
+                  </strong>
+                </div>
+                <div className="bf-campaign-status-item">
+                  <span>Image audit</span>
+                  <strong
+                    className={
+                      imageAuditResult && auditedImageAltText === imageAltText
+                        ? 'is-ready'
+                        : imageFile || imageAuditResult
+                          ? 'is-pending'
+                          : ''
+                    }
+                  >
+                    {imageAuditResult
+                      ? auditedImageAltText === imageAltText
+                        ? 'Ready to save'
+                        : 'Alt text changed · re-audit'
+                      : imageFile
+                        ? 'Audit selected image'
+                        : imagePreviewUrl
+                          ? 'Image attached · no audit result'
+                          : 'Optional · not added'}
+                  </strong>
+                </div>
+                <div className="bf-campaign-status-item">
+                  <span>Submission</span>
+                  <strong>{editingSubmissionId ? 'Existing draft' : 'New · not saved'}</strong>
+                </div>
+              </div>
+              <div className="bf-campaign-bundle-actions">
+                <button
+                  type="button"
+                  className="bf-btn-secondary"
+                  onClick={() => setActiveView(activeView === 'image' ? 'workspace' : 'image')}
+                >
+                  {activeView === 'image' ? '← Return to Text Audit' : 'Open Image Audit →'}
+                </button>
+              </div>
             </section>
 
             {/* 5. Sticky Two-Column Audit Workspace */}
@@ -1366,7 +1468,10 @@ export function App() {
                         id="bf-editor-input"
                         className="bf-textarea"
                         value={content}
-                        onChange={(e) => setContent(e.target.value)}
+                        onChange={(e) => {
+                          setContent(e.target.value)
+                          setGuidanceCopyFeedback(null)
+                        }}
                         placeholder="Paste or write marketing content to check against brand guidelines..."
                       />
                     </div>
@@ -1453,8 +1558,10 @@ export function App() {
                 </form>
                 )}
 
+{activeView === 'image' && (
+                  <>
                 {/* Campaign image and alt-text audit */}
-                <form className="bf-card" onSubmit={handleImageAuditSubmit}>
+                <form className="bf-card bf-image-audit-form" onSubmit={handleImageAuditSubmit}>
                   <div className="bf-card-header">
                     <div>
                       <h2 className="bf-section-title">Campaign Image Audit</h2>
@@ -1471,12 +1578,14 @@ export function App() {
                         id="bf-image-file"
                         className="bf-image-file-input"
                         type="file"
+                        disabled={isImageAuditing}
                         accept="image/png,image/jpeg,.png,.jpg,.jpeg"
                         aria-label="Choose a campaign image"
                         onChange={(event) => {
                           const selectedFile = event.currentTarget.files?.[0] ?? null
                           setImageFile(selectedFile)
                           setImageAuditResult(null)
+                          setAuditedImageAltText(null)
                           setImageAuditError(null)
 
                           if (imageObjectUrlRef.current) {
@@ -1551,6 +1660,7 @@ export function App() {
                         className="bf-textarea"
                         rows={3}
                         value={imageAltText}
+                        disabled={isImageAuditing}
                         onChange={(event) => setImageAltText(event.target.value)}
                         placeholder="Describe the meaningful content of the campaign image..."
                       />
@@ -1559,7 +1669,7 @@ export function App() {
                       </p>
                     </div>
 
-                    <div className="bf-editor-actions">
+                    <div className="bf-editor-actions bf-image-editor-actions">
                       <button
                         type="submit"
                         className="bf-btn-primary"
@@ -1567,7 +1677,38 @@ export function App() {
                       >
                         {isImageAuditing ? 'Auditing image…' : 'Audit Image & Alt Text'}
                       </button>
+                      <button
+                        type="button"
+                        className="bf-btn-secondary"
+                        onClick={handleSaveDraft}
+                        disabled={saveDraftBusy || isAuditing || isImageAuditing || authSession.user.role !== 'CREATOR'}
+                      >
+                        {saveDraftBusy ? 'Saving…' : 'Save Campaign Draft'}
+                      </button>
                     </div>
+                    <p className="bf-section-meta bf-image-save-help">
+                      Saving checks that the current copy has a current Preflight Audit and that any newly selected image has a matching image audit.
+                    </p>
+                    {saveDraftError && (
+                      <p className="bf-save-feedback error" role="alert">{saveDraftError}</p>
+                    )}
+                    {saveDraftMessage && (
+                      <p className="bf-save-feedback success" role="status">{saveDraftMessage}</p>
+                    )}
+
+                    {!isImageAuditing && !imageAuditError && !imageAuditResult && (
+                      <div className="bf-audit-empty-banner" role="status">
+                        <span className="bf-audit-empty-icon" aria-hidden="true">▧</span>
+                        <div className="bf-audit-empty-copy">
+                          <strong>Ready to inspect your campaign image</strong>
+                          <p>
+                            {imageFile
+                              ? 'Click Audit Image & Alt Text to check palette alignment and accessibility.'
+                              : 'Choose a PNG or JPEG image, add meaningful alt text, then click Audit Image & Alt Text. Results will appear here.'}
+                          </p>
+                        </div>
+                      </div>
+                    )}
 
                     {isImageAuditing && (
                       <div className="bf-status-banner info" role="status">
@@ -1682,9 +1823,12 @@ export function App() {
                     )}
                   </div>
                 </form>
+                  </>
+                )}
 
                 {/* Compact Approved Facts Drawer */}
-                <div className="bf-card">
+                {activeView === 'workspace' && (
+<div className="bf-card">
                   <div className="bf-card-header">
                     <h2 className="bf-section-title">Approved Product Facts</h2>
                     <button
@@ -1708,6 +1852,7 @@ export function App() {
                     </div>
                   )}
                 </div>
+                )}
               </div>
 
               {/* RIGHT PANE: Consolidated Findings & Human Decision */}
@@ -1720,21 +1865,31 @@ export function App() {
                     {auditResult && (
                       <div className="bf-metrics-inline">
                         <span>
-                          <strong>{openConsolidatedCount}</strong> open
+                          <strong>{consolidatedFindings.length}</strong> consolidated{' '}
+                          {consolidatedFindings.length === 1 ? 'issue' : 'issues'}
                         </span>
                         <span>•</span>
                         <span>
-                          <strong>{consolidatedFindings.length}</strong> consolidated{' '}
-                          {consolidatedFindings.length === 1 ? 'issue' : 'issues'}
-                          {auditResult.totalFindings > consolidatedFindings.length
-                            ? ` (from ${auditResult.totalFindings} checks)`
-                            : ''}
+                          <strong>{auditResult.totalFindings}</strong> total checks
                         </span>
                       </div>
                     )}
                   </div>
 
                   <div className="bf-card-body">
+                    {!isAuditing && !auditError && !auditResult && (
+                      <div className="bf-audit-empty-banner" role="status">
+                        <span className="bf-audit-empty-icon" aria-hidden="true">✦</span>
+                        <div className="bf-audit-empty-copy">
+                          <strong>Ready for preflight</strong>
+                          <p>
+                            Run <b>Preflight Audit</b> to check terminology, claims, approved
+                            product facts, and tone. Your findings and suggested fixes will appear here.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
                     {isAuditing && (
                       <div className="bf-status-banner info">
                         <div className="bf-banner-body">
@@ -1804,7 +1959,6 @@ export function App() {
                               {(
                                 [
                                   { id: 'ALL', label: `All (${consolidatedFindings.length})` },
-                                  { id: 'OPEN', label: `Open (${openConsolidatedCount})` },
                                   {
                                     id: 'CLAIM',
                                     label: `Claims (${
@@ -1859,17 +2013,11 @@ export function App() {
                           </div>
                         ) : (
                           <div className="bf-findings-list">
-                            {filteredFindings.map((group) => {
-                              const resolvedNote = resolvedGroups[group.id]
-                              const isResolved = Boolean(resolvedNote)
-
-                              return (
-                                <div
-                                  key={group.id}
-                                  className={`bf-finding-card severity-${group.severity} ${
-                                    isResolved ? 'resolved' : ''
-                                  }`}
-                                >
+                            {filteredFindings.map((group) => (
+                              <div
+                                key={group.id}
+                                className={`bf-finding-card severity-${group.severity}`}
+                              >
                                   <div className="bf-finding-meta">
                                     <div className="bf-finding-tags">
                                       {group.ruleCodes.map((code) => (
@@ -1886,11 +2034,6 @@ export function App() {
                                         {group.severity.charAt(0) +
                                           group.severity.slice(1).toLowerCase()}
                                       </span>
-                                      {isResolved && (
-                                        <span className="bf-resolved-indicator">
-                                          {resolvedNote}
-                                        </span>
-                                      )}
                                     </div>
 
                                     <span className="bf-source-meta">
@@ -1943,39 +2086,29 @@ export function App() {
                                     >
                                       Locate in editor
                                     </button>
-
-                                    {!isResolved ? (
-                                      <>
-                                        <button
-                                          type="button"
-                                          className="bf-btn-action"
-                                          onClick={() => handleTagEvidenceInEditor(group)}
-                                        >
-                                          Mark span in draft
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="bf-btn-action"
-                                          onClick={() =>
-                                            handleToggleResolved(group.id, 'Acknowledged')
-                                          }
-                                        >
-                                          Acknowledge
-                                        </button>
-                                      </>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        className="bf-btn-action"
-                                        onClick={() => handleToggleResolved(group.id, '')}
-                                      >
-                                        Reopen issue
-                                      </button>
-                                    )}
+                                    <button
+                                      type="button"
+                                      className="bf-btn-action"
+                                      onClick={() => void handleCopyGuidance(group)}
+                                    >
+                                      {guidanceCopyFeedback?.groupId === group.id &&
+                                      !guidanceCopyFeedback.isError
+                                        ? 'Guidance copied'
+                                        : 'Copy guidance'}
+                                    </button>
                                   </div>
-                                </div>
-                              )
-                            })}
+                                  {guidanceCopyFeedback?.groupId === group.id && (
+                                    <p
+                                      className={`bf-guidance-copy-feedback${
+                                        guidanceCopyFeedback.isError ? ' error' : ''
+                                      }`}
+                                      role={guidanceCopyFeedback.isError ? 'alert' : 'status'}
+                                    >
+                                      {guidanceCopyFeedback.message}
+                                    </p>
+                                  )}
+                              </div>
+                            ))}
                           </div>
                         )}
                       </>
@@ -1983,69 +2116,58 @@ export function App() {
                   </div>
                 </div>
 
-                {/* Human Review Decision Card */}
-                <div className="bf-card">
+                {/* Persisted feedback from the real review workflow */}
+                {routeSubmissionId && reviewerComments.length > 0 && (
+<div className="bf-card bf-creator-feedback">
                   <div className="bf-card-header">
-                    <h2 className="bf-section-title">Reviewer Sign-Off</h2>
-                    <span className="bf-section-meta">Session preview (non-persistent)</span>
+                    <div>
+                      <h2 className="bf-section-title">Reviewer Feedback</h2>
+                      <p className="bf-section-meta">
+                        Comments from the Review Queue. These notes are saved with this submission.
+                      </p>
+                    </div>
+                    {reviewerComments.length > 0 && (
+                      <span className="bf-feedback-count">
+                        {reviewerComments.length} {reviewerComments.length === 1 ? 'note' : 'notes'}
+                      </span>
+                    )}
                   </div>
 
                   <div className="bf-card-body">
-                    <div className="bf-field">
-                      <label className="bf-label" htmlFor="bf-reviewer-note">
-                        Review note
-                      </label>
-                      <input
-                        id="bf-reviewer-note"
-                        type="text"
-                        className="bf-input"
-                        value={reviewerNote}
-                        onChange={(e) => setReviewerNote(e.target.value)}
-                        placeholder="Add optional context for approval or requested revisions..."
-                      />
-                    </div>
-
-                    <div className="bf-decision-row">
-                      <button
-                        type="button"
-                        className="bf-btn-approve"
-                        onClick={() => handleDecision('APPROVED')}
-                      >
-                        Approve for Publication
-                      </button>
-                      <button
-                        type="button"
-                        className="bf-btn-request-changes"
-                        onClick={() => handleDecision('CHANGES_REQUESTED')}
-                      >
-                        Request Revisions
-                      </button>
-                    </div>
-
-                    {sessionDecision.status !== 'NONE' && (
-                      <div
-                        className={`bf-status-banner ${
-                          sessionDecision.status === 'APPROVED' ? 'success' : 'warn'
-                        }`}
-                      >
-                        <div className="bf-banner-body">
-                          <div className="bf-banner-heading">
-                            <span>
-                              {sessionDecision.status === 'APPROVED'
-                                ? 'Approved for publication'
-                                : 'Revisions requested'}
-                            </span>
-                            <span>{sessionDecision.timestamp}</span>
-                          </div>
-                          <div>
-                            {sessionDecision.note} ({openConsolidatedCount} open{' '}
-                            {openConsolidatedCount === 1 ? 'finding' : 'findings'} remaining)
-                          </div>
+                    {reviewerComments.length > 0 ? (
+                      <div className="bf-creator-feedback-list">
+                        {reviewerComments.map((comment) => (
+                          <article className="bf-creator-feedback-item" key={comment.id}>
+                            <div className="bf-creator-feedback-heading">
+                              <strong>{comment.author?.name ?? 'Reviewer'}</strong>
+                              <span className="bf-creator-feedback-role">
+                                {comment.author?.role ?? 'REVIEWER'}
+                              </span>
+                            </div>
+                            <p className="bf-creator-feedback-note">{comment.body}</p>
+                            <time
+                              className="bf-creator-feedback-time"
+                              dateTime={comment.createdAt}
+                            >
+                              {new Date(comment.createdAt).toLocaleString()}
+                            </time>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="bf-creator-feedback-empty">
+                        <span className="bf-creator-feedback-empty-mark" aria-hidden="true">✓</span>
+                        <div>
+                          <strong>No reviewer feedback yet</strong>
+                          <p>
+                            When a reviewer requests changes or leaves a note, it will appear here.
+                          </p>
                         </div>
                       </div>
                     )}
                   </div>
                 </div>
+                )}
               </div>
             </div>
           </>
@@ -2055,6 +2177,13 @@ export function App() {
             brandProfileId={BRAND_PROFILE_ID}
             onBrandLoaded={setBrandProfile}
             onBack={() => setActiveView('workspace')}
+          />
+        ) : activeView === 'manager' && authSession.user.role === 'MANAGER' ? (
+          <ManagerDashboard
+            apiBaseUrl={API_BASE_URL}
+            token={authSession.token}
+            onOpenReviewQueue={() => setActiveView('review')}
+            onOpenRulebook={() => setActiveView('rulebook')}
           />
         ) : activeView === 'submissions' && authSession.user.role === 'CREATOR' ? (
           <SavedSubmissionsPanel

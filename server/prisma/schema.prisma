@@ -93,6 +93,7 @@ model ApprovedFact {
 model Submission {
   id             String           @id @default(cuid())
   title          String
+  tags           String[]         @default([])
   contentText    String           @db.Text
   imageName      String?
   imageAltText   String?          @db.Text

@@ -83,6 +83,29 @@ function parseFindings(value: unknown): PersistedFinding[] | null {
   return findings;
 }
 
+const SUBMISSION_TAGS = [
+  "SOCIAL",
+  "EMAIL",
+  "BLOG",
+  "LANDING_PAGE",
+  "PAID_AD",
+  "PRODUCT",
+  "OTHER",
+] as const;
+type SubmissionTag = (typeof SUBMISSION_TAGS)[number];
+
+function parseSubmissionTags(value: unknown): SubmissionTag[] | null {
+  if (value === undefined) return [];
+  if (
+    !Array.isArray(value) ||
+    value.length > SUBMISSION_TAGS.length ||
+    !value.every((tag) => typeof tag === "string" && SUBMISSION_TAGS.includes(tag as SubmissionTag))
+  ) {
+    return null;
+  }
+  return [...new Set(value as SubmissionTag[])];
+}
+
 type ImageAuditParseResult = {
   valid: boolean;
   present: boolean;
@@ -293,6 +316,7 @@ submissionsRouter.get("/", requireAuth, async (req, res) => {
       select: {
         id: true,
         title: true,
+        tags: true,
         status: true,
         createdAt: true,
         updatedAt: true,
@@ -324,6 +348,7 @@ submissionsRouter.post(
 
     const { title, contentText, brandProfileId } = body;
     const findings = parseFindings(body.findings);
+    const tags = parseSubmissionTags(body.tags);
     const imageAudit = parseImageAuditData(body.imageAuditData);
     const imageName = body.imageName;
     const imageAltText = body.imageAltText;
@@ -344,6 +369,7 @@ submissionsRouter.post(
       contentText.length > 20000 ||
       !nonEmptyString(brandProfileId) ||
       findings === null ||
+      tags === null ||
       !imageAudit.valid ||
       !imageAsset.valid ||
       (imageName !== undefined && imageName !== null &&
@@ -370,6 +396,7 @@ submissionsRouter.post(
         const created = await tx.submission.create({
           data: {
             title: title.trim(),
+            tags: tags ?? [],
             contentText,
             imageName: typeof imageName === "string" && imageName.trim()
               ? imageName.trim()
@@ -458,6 +485,8 @@ submissionsRouter.patch(
     }
 
     const { title, contentText } = body;
+    const hasTags = Object.prototype.hasOwnProperty.call(body, "tags");
+    const tags = hasTags ? parseSubmissionTags(body.tags) : undefined;
     const hasFindings = body.findings !== undefined;
     const findings = hasFindings
       ? parseFindings(body.findings)
@@ -485,7 +514,8 @@ submissionsRouter.patch(
         (typeof contentText !== "string" ||
           !contentText.trim() ||
           contentText.length > 20000)) ||
-      (title === undefined && contentText === undefined && !hasFindings && !hasImageFields) ||
+      (title === undefined && contentText === undefined && !hasFindings && !hasImageFields && !hasTags) ||
+      (hasTags && tags === null) ||
       (hasFindings && findings === null) ||
       !imageAudit.valid ||
       !imageAsset.valid ||
@@ -556,6 +586,7 @@ submissionsRouter.patch(
           where: { id: current.id },
           data: {
             ...(typeof title === "string" ? { title: title.trim() } : {}),
+            ...(hasTags ? { tags: tags! } : {}),
             ...(typeof contentText === "string" ? { contentText } : {}),
             ...(hasImageName ? { imageName: nextImageName } : {}),
             ...(hasImageAltText ? { imageAltText: nextImageAltText } : {}),
