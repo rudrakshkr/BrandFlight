@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import type { ImageAuditData } from './types/imageAudit'
 
 type Decision = 'APPROVED' | 'CHANGES_REQUESTED'
 
@@ -10,6 +11,7 @@ interface Summary {
   brandProfile?: { id: string; name: string }
   creator?: { id: string; name: string; email: string }
   _count: { findings: number; comments: number; revisions: number }
+  imageUrl?: string | null
 }
 
 interface Finding {
@@ -35,9 +37,13 @@ interface Comment {
 interface Detail extends Summary {
   contentText: string
   brandProfileId: string
+  imageName: string | null
+  imageAltText: string | null
+  imageAuditData: ImageAuditData | null
   findings: Finding[]
   comments: Comment[]
   revisions: Array<{ id: string; version: number; createdAt: string }>
+  imagePublicId: string | null
 }
 
 interface Props {
@@ -289,6 +295,87 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
                 <h3>Submitted copy</h3>
                 <pre className="bf-review-copy">{selected.contentText}</pre>
               </section>
+
+              {(selected.imageUrl || selected.imageAuditData || selected.imageName || selected.imageAltText) && (
+                <section className="bf-review-section">
+                  <h3>Campaign image &amp; alt-text audit</h3>
+                  {selected.imageUrl && (
+                    <figure className="bf-review-image-preview">
+                      <img
+                        src={selected.imageUrl}
+                        alt={selected.imageAltText?.trim() || selected.imageName || `Campaign image for ${selected.title}`}
+                        loading="lazy"
+                      />
+                      <figcaption>{selected.imageName || "Campaign image"}</figcaption>
+                    </figure>
+                  )}
+                  <p>
+                    <b>Image:</b>{' '}
+                    {selected.imageName ??
+                      selected.imageAuditData?.image.name ??
+                      'Image metadata saved'}
+                  </p>
+                  <p>
+                    <b>Alt text:</b>{' '}
+                    {selected.imageAltText?.trim() || 'No alt text supplied.'}
+                  </p>
+
+                  {selected.imageAuditData ? (
+                    <>
+                      <p>
+                        <b>Image findings:</b>{' '}
+                        {selected.imageAuditData.totalFindings}
+                      </p>
+
+                      <div className="bf-swatch-list">
+                        {selected.imageAuditData.image.dominantColors.map((color) => (
+                          <div className="bf-swatch-item" key={`dominant-${color}`}>
+                            <span
+                              className="bf-swatch-color"
+                              style={{ backgroundColor: color }}
+                            />
+                            <code>{color}</code>
+                            <span className="bf-review-small">Detected</span>
+                          </div>
+                        ))}
+                        {selected.imageAuditData.image.approvedColors.map((color) => (
+                          <div className="bf-swatch-item" key={`approved-${color}`}>
+                            <span
+                              className="bf-swatch-color"
+                              style={{ backgroundColor: color }}
+                            />
+                            <code>{color}</code>
+                            <span className="bf-review-small">Approved</span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {selected.imageAuditData.findings.map((finding, index) => (
+                        <article
+                          className="bf-review-finding"
+                          key={`image-${finding.ruleCode}-${finding.title}-${index}`}
+                        >
+                          <div className="bf-review-finding-top">
+                            <span>{finding.category}</span>
+                            <strong className={`bf-review-severity ${finding.severity.toLowerCase()}`}>
+                              {finding.severity}
+                            </strong>
+                            <code>{finding.ruleCode}</code>
+                          </div>
+                          <h4>{finding.title}</h4>
+                          <p>{finding.message}</p>
+                          <p><b>Evidence:</b> {finding.evidence}</p>
+                          <p><b>Suggestion:</b> {finding.suggestion}</p>
+                        </article>
+                      ))}
+                    </>
+                  ) : (
+                    <p className="bf-review-small">
+                      Image metadata is saved, but an audit result is not attached.
+                    </p>
+                  )}
+                </section>
+              )}
 
               <section className="bf-review-section">
                 <h3>Saved findings ({selected.findings.length})</h3>

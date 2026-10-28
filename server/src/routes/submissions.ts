@@ -1,4 +1,5 @@
 import { Router, type Response } from "express";
+import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import {
   requireAuth,
@@ -80,6 +81,119 @@ function parseFindings(value: unknown): PersistedFinding[] | null {
   }
 
   return findings;
+}
+
+type ImageAuditParseResult = {
+  valid: boolean;
+  present: boolean;
+  value?: Prisma.InputJsonValue | null;
+};
+
+function parseImageAuditData(value: unknown): ImageAuditParseResult {
+  if (value === undefined) return { valid: true, present: false };
+  if (value === null) {
+    return { valid: true, present: true, value: null };
+  }
+
+  if (
+    !isRecord(value) ||
+    !isRecord(value.image) ||
+    !Array.isArray(value.findings) ||
+    value.findings.length > 20 ||
+    !Number.isInteger(value.totalFindings) ||
+    value.totalFindings !== value.findings.length
+  ) {
+    return { valid: false, present: true };
+  }
+
+  const image = value.image;
+  const validDimension = (item: unknown) =>
+    item === null || (typeof item === "number" && Number.isFinite(item) && item > 0);
+  const validColors = (item: unknown) =>
+    Array.isArray(item) &&
+    item.length <= 20 &&
+    item.every((color) => typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color));
+
+  if (
+    !nonEmptyString(image.name) ||
+    image.name.length > 255 ||
+    !nonEmptyString(image.format) ||
+    image.format.length > 20 ||
+    !validDimension(image.width) ||
+    !validDimension(image.height) ||
+    !validColors(image.dominantColors) ||
+    !validColors(image.approvedColors) ||
+    !Number.isInteger(image.altTextLength) ||
+    (image.altTextLength as number) < 0 ||
+    (image.altTextLength as number) > 1000
+  ) {
+    return { valid: false, present: true };
+  }
+
+  for (const item of value.findings) {
+    if (
+      !isRecord(item) ||
+      (item.category !== "VISUAL" && item.category !== "ACCESSIBILITY") ||
+      (item.severity !== "WARNING" && item.severity !== "ERROR") ||
+      !nonEmptyString(item.title) ||
+      !nonEmptyString(item.message)
+    ) {
+      return { valid: false, present: true };
+    }
+  }
+
+  const serialized = JSON.stringify(value);
+  if (serialized.length > 100_000) {
+    return { valid: false, present: true };
+  }
+
+  return {
+    valid: true,
+    present: true,
+    value: value as Prisma.InputJsonValue,
+  };
+}
+
+type CloudinaryAsset = {
+  present: boolean;
+  valid: boolean;
+  imageUrl: string | null;
+  publicId: string | null;
+};
+
+function parseCloudinaryAsset(
+  imageUrl: unknown,
+  publicId: unknown,
+  present: boolean,
+): CloudinaryAsset {
+  if (!present) {
+    return { present: false, valid: true, imageUrl: null, publicId: null };
+  }
+
+  if (imageUrl === null && publicId === null) {
+    return { present: true, valid: true, imageUrl: null, publicId: null };
+  }
+
+  const validUrl =
+    typeof imageUrl === "string" &&
+    /^https:\/\/res\.cloudinary\.com\/[A-Za-z0-9_-]+\/image\/upload\/.+$/.test(imageUrl);
+
+  const validPublicId =
+    typeof publicId === "string" &&
+    publicId.length > 0 &&
+    publicId.length <= 512 &&
+    /^[A-Za-z0-9_./-]+$/.test(publicId);
+
+  if (!validUrl || !validPublicId) {
+    return { present: true, valid: false, imageUrl: null, publicId: null };
+  }
+
+  return {
+    present: true,
+    valid: true,
+    imageUrl: imageUrl as string,
+    publicId: publicId as string,
+  };
 }
 
 const submissionDetails = {
@@ -210,6 +324,17 @@ submissionsRouter.post(
 
     const { title, contentText, brandProfileId } = body;
     const findings = parseFindings(body.findings);
+    const imageAudit = parseImageAuditData(body.imageAuditData);
+    const imageName = body.imageName;
+    const imageAltText = body.imageAltText;
+    const hasCloudinaryAsset =
+      Object.prototype.hasOwnProperty.call(body, "imageUrl") ||
+      Object.prototype.hasOwnProperty.call(body, "imagePublicId");
+    const imageAsset = parseCloudinaryAsset(
+      body.imageUrl,
+      body.imagePublicId,
+      hasCloudinaryAsset,
+    );
 
     if (
       !nonEmptyString(title) ||
@@ -218,7 +343,13 @@ submissionsRouter.post(
       !contentText.trim() ||
       contentText.length > 20000 ||
       !nonEmptyString(brandProfileId) ||
-      findings === null
+      findings === null ||
+      !imageAudit.valid ||
+      !imageAsset.valid ||
+      (imageName !== undefined && imageName !== null &&
+        (typeof imageName !== "string" || imageName.length > 255)) ||
+      (imageAltText !== undefined && imageAltText !== null &&
+        (typeof imageAltText !== "string" || imageAltText.length > 1000))
     ) {
       return res.status(400).json({
         error: "Provide a title (up to 160 characters), content (up to 20,000 characters), brandProfileId, and at most 20 valid findings.",
@@ -240,6 +371,17 @@ submissionsRouter.post(
           data: {
             title: title.trim(),
             contentText,
+            imageName: typeof imageName === "string" && imageName.trim()
+              ? imageName.trim()
+              : null,
+            imageAltText: typeof imageAltText === "string" && imageAltText.trim()
+              ? imageAltText.trim()
+              : null,
+            imageUrl: imageAsset.imageUrl,
+            imagePublicId: imageAsset.publicId,
+            ...(imageAudit.value
+              ? { imageAuditData: imageAudit.value }
+              : {}),
             brandProfileId: brand.id,
             creatorId: req.authUser!.id,
           },
@@ -249,6 +391,13 @@ submissionsRouter.post(
           data: {
             version: 1,
             contentText,
+            imageName: created.imageName,
+            imageAltText: created.imageAltText,
+            imageUrl: created.imageUrl,
+            imagePublicId: created.imagePublicId,
+            ...(imageAudit.value
+              ? { imageAuditData: imageAudit.value }
+              : {}),
             submissionId: created.id,
             authorId: req.authUser!.id,
           },
@@ -313,6 +462,21 @@ submissionsRouter.patch(
     const findings = hasFindings
       ? parseFindings(body.findings)
       : undefined;
+    const hasImageName = Object.prototype.hasOwnProperty.call(body, "imageName");
+    const hasImageAltText = Object.prototype.hasOwnProperty.call(body, "imageAltText");
+    const hasCloudinaryAsset =
+      Object.prototype.hasOwnProperty.call(body, "imageUrl") ||
+      Object.prototype.hasOwnProperty.call(body, "imagePublicId");
+    const imageAsset = parseCloudinaryAsset(
+      body.imageUrl,
+      body.imagePublicId,
+      hasCloudinaryAsset,
+    );
+    const imageAudit = parseImageAuditData(body.imageAuditData);
+    const imageName = body.imageName;
+    const imageAltText = body.imageAltText;
+    const hasImageFields =
+      hasImageName || hasImageAltText || imageAudit.present || imageAsset.present;
 
     if (
       (title !== undefined &&
@@ -321,8 +485,14 @@ submissionsRouter.patch(
         (typeof contentText !== "string" ||
           !contentText.trim() ||
           contentText.length > 20000)) ||
-      (title === undefined && contentText === undefined && !hasFindings) ||
-      (hasFindings && findings === null)
+      (title === undefined && contentText === undefined && !hasFindings && !hasImageFields) ||
+      (hasFindings && findings === null) ||
+      !imageAudit.valid ||
+      !imageAsset.valid ||
+      (hasImageName && imageName !== null &&
+        (typeof imageName !== "string" || imageName.length > 255)) ||
+      (hasImageAltText && imageAltText !== null &&
+        (typeof imageAltText !== "string" || imageAltText.length > 1000))
     ) {
       return res.status(400).json({ error: "Invalid submission update." });
     }
@@ -353,16 +523,59 @@ submissionsRouter.patch(
         typeof contentText === "string" ? contentText : current.contentText;
       const contentChanged = nextContent !== current.contentText;
 
+      const nextImageName = hasImageName
+        ? (typeof imageName === "string" && imageName.trim() ? imageName.trim() : null)
+        : current.imageName;
+      const nextImageAltText = hasImageAltText
+        ? (typeof imageAltText === "string" && imageAltText.trim()
+            ? imageAltText.trim()
+            : null)
+        : current.imageAltText;
+      const nextImageUrl = imageAsset.present
+        ? imageAsset.imageUrl
+        : current.imageUrl;
+      const nextImagePublicId = imageAsset.present
+        ? imageAsset.publicId
+        : current.imagePublicId;
+      const imageAuditChanged = imageAudit.present &&
+        JSON.stringify(current.imageAuditData ?? null) !==
+        JSON.stringify(imageAudit.value ?? null);
+      const nextImageAuditData = imageAudit.present
+        ? imageAudit.value ?? null
+        : current.imageAuditData;
+      const imageChanged =
+        nextImageName !== current.imageName ||
+        nextImageAltText !== current.imageAltText ||
+        nextImageUrl !== current.imageUrl ||
+        nextImagePublicId !== current.imagePublicId ||
+        imageAuditChanged;
+      const snapshotChanged = contentChanged || imageChanged;
+
       const updated = await prisma.$transaction(async (tx) => {
         const result = await tx.submission.update({
           where: { id: current.id },
           data: {
             ...(typeof title === "string" ? { title: title.trim() } : {}),
             ...(typeof contentText === "string" ? { contentText } : {}),
+            ...(hasImageName ? { imageName: nextImageName } : {}),
+            ...(hasImageAltText ? { imageAltText: nextImageAltText } : {}),
+            ...(imageAsset.present
+              ? {
+                  imageUrl: nextImageUrl,
+                  imagePublicId: nextImagePublicId,
+                }
+              : {}),
+            ...(imageAudit.present
+              ? {
+                  imageAuditData: imageAudit.value === null
+                    ? Prisma.DbNull
+                    : imageAudit.value!,
+                }
+              : {}),
           },
         });
 
-        if (contentChanged) {
+        if (snapshotChanged) {
           const latestRevision = await tx.revision.findFirst({
             where: { submissionId: current.id },
             orderBy: { version: "desc" },
@@ -373,6 +586,13 @@ submissionsRouter.patch(
             data: {
               version: (latestRevision?.version ?? 0) + 1,
               contentText: nextContent,
+              imageName: nextImageName,
+              imageAltText: nextImageAltText,
+              imageUrl: nextImageUrl,
+              imagePublicId: nextImagePublicId,
+              ...(nextImageAuditData
+                ? { imageAuditData: nextImageAuditData as Prisma.InputJsonValue }
+                : {}),
               submissionId: current.id,
               authorId: req.authUser!.id,
             },

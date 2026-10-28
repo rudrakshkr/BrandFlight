@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { v2 as cloudinary } from "cloudinary";
 import multer from "multer";
 import sharp from "sharp";
 import { prisma } from "../lib/prisma.js";
@@ -10,6 +11,48 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_ALT_TEXT_LENGTH = 150;
 const MIN_ALT_TEXT_LENGTH = 10;
 const COLOR_DISTANCE_THRESHOLD = 75;
+
+async function uploadImageToCloudinary(buffer: Buffer) {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  const apiKey = process.env.CLOUDINARY_API_KEY;
+  const apiSecret = process.env.CLOUDINARY_API_SECRET;
+
+  if (!cloudName || !apiKey || !apiSecret) {
+    throw new Error("Cloudinary credentials are not configured.");
+  }
+
+  cloudinary.config({
+    cloud_name: cloudName,
+    api_key: apiKey,
+    api_secret: apiSecret,
+    secure: true,
+  });
+
+  return new Promise<{ secureUrl: string; publicId: string }>((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: "brandflight/campaign-images",
+        resource_type: "image",
+        use_filename: false,
+        unique_filename: true,
+        overwrite: false,
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        if (!result?.secure_url || !result.public_id) {
+          return reject(new Error("Cloudinary returned no asset URL or public ID."));
+        }
+
+        resolve({
+          secureUrl: result.secure_url,
+          publicId: result.public_id,
+        });
+      },
+    );
+
+    stream.end(buffer);
+  });
+}
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -235,7 +278,13 @@ async function processImageAudit(req: Request, res: Response) {
     });
   }
 
+  const asset = await uploadImageToCloudinary(req.file.buffer);
+
   return res.json({
+    asset: {
+      secureUrl: asset.secureUrl,
+      publicId: asset.publicId,
+    },
     image: {
       name: req.file.originalname,
       format: metadata.format,

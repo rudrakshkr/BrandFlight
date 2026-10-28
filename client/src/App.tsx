@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type SubmitEvent, type ReactNode } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
+import type { ImageAuditData as ImageAuditApiResponse } from './types/imageAudit'
 import RulebookPanel, { type BrandProfileData } from './RulebookPanel'
 import SavedSubmissionsPanel, { type SubmissionDetail } from './SavedSubmissionsPanel'
 import ReviewQueuePanel from './ReviewQueuePanel'
@@ -75,30 +76,6 @@ interface AuditApiResponse {
   semanticStatus: 'completed' | 'unavailable'
 }
 
-interface ImageAuditFinding {
-  category: 'VISUAL' | 'ACCESSIBILITY'
-  severity: 'WARNING' | 'ERROR'
-  title: string
-  message: string
-  evidence: string
-  suggestion: string
-  ruleCode: string
-  confidence: string
-}
-
-interface ImageAuditApiResponse {
-  image: {
-    name: string
-    format: string
-    width: number | null
-    height: number | null
-    dominantColors: string[]
-    approvedColors: string[]
-    altTextLength: number
-  }
-  totalFindings: number
-  findings: ImageAuditFinding[]
-}
 
 interface SampleDraft {
   id: string
@@ -106,6 +83,34 @@ interface SampleDraft {
   title: string
   channel: string
   content: string
+}
+
+function imageAuditSnapshot(data: ImageAuditApiResponse | null | undefined) {
+  if (!data) return null
+
+  return {
+    asset: data.asset,
+    image: {
+      name: data.image.name,
+      format: data.image.format,
+      width: data.image.width,
+      height: data.image.height,
+      dominantColors: data.image.dominantColors,
+      approvedColors: data.image.approvedColors,
+      altTextLength: data.image.altTextLength,
+    },
+    totalFindings: data.totalFindings,
+    findings: data.findings.map((finding) => ({
+      category: finding.category,
+      severity: finding.severity,
+      title: finding.title,
+      message: finding.message,
+      evidence: finding.evidence,
+      suggestion: finding.suggestion,
+      ruleCode: finding.ruleCode,
+      confidence: finding.confidence,
+    })),
+  }
 }
 
 const API_BASE_URL =
@@ -375,6 +380,8 @@ export function App() {
   const [routeDraftLoadedId, setRouteDraftLoadedId] = useState<string | null>(null)
   const [brandProfile, setBrandProfile] = useState<BrandProfileData | null>(null)
   const [imageFile, setImageFile] = useState<File | null>(null)
+  const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
+  const imageObjectUrlRef = useRef<string | null>(null)
   const [imageAltText, setImageAltText] = useState('')
   const [isImageAuditing, setIsImageAuditing] = useState(false)
   const [imageAuditError, setImageAuditError] = useState<string | null>(null)
@@ -546,6 +553,10 @@ export function App() {
           title: submission.title.trim(),
           content: submission.contentText,
           findings: restoredFindings,
+          imageName: submission.imageName ?? null,
+          imageAssetId: submission.imagePublicId ?? null,
+          imageAltText: submission.imageAltText ?? null,
+          imageAudit: imageAuditSnapshot(submission.imageAuditData),
         })
 
         if (cancelled) return
@@ -556,6 +567,22 @@ export function App() {
         setDraftTitle(submission.title)
         setDraftChannel('Website')
         setContent(submission.contentText)
+        setImageFile(null)
+        setImageAltText(submission.imageAltText ?? '')
+        setImageAuditResult(
+          submission.imageAuditData
+            ? {
+                ...submission.imageAuditData,
+                asset: submission.imageUrl && submission.imagePublicId
+                  ? { secureUrl: submission.imageUrl, publicId: submission.imagePublicId }
+                  : submission.imageAuditData.asset,
+              }
+            : null,
+        )
+        setImagePreviewUrl(
+          submission.imageUrl ?? submission.imageAuditData?.asset?.secureUrl ?? null,
+        )
+        setImageAuditError(null)
         setCategoryFilter('ALL')
         setResolvedGroups({})
         setAuditError(null)
@@ -947,10 +974,40 @@ export function App() {
       return
     }
 
+    if (imageFile && !imageAuditResult) {
+      setSaveDraftError(
+        'Run the image audit before saving the newly selected image.',
+      )
+      return
+    }
+
+    if (
+      imageAuditResult &&
+      imageAuditResult.image.altTextLength !== imageAltText.length
+    ) {
+      setSaveDraftError(
+        'The alt text changed after its image audit. Re-select the image and run the image audit again before saving.',
+      )
+      return
+    }
+
+    if (imageAuditResult && (
+      !imageAuditResult.asset?.secureUrl || !imageAuditResult.asset?.publicId
+    )) {
+      setSaveDraftError(
+        'The image audit did not return a saved Cloudinary image. Run the image audit again before saving.',
+      )
+      return
+    }
+
     const snapshotKey = JSON.stringify({
       title: draftTitle.trim(),
       content,
       findings: auditResult.findings,
+      imageName: imageAuditResult?.image.name ?? null,
+      imageAssetId: imageAuditResult?.asset?.publicId ?? null,
+      imageAltText: imageAuditResult ? imageAltText : null,
+      imageAudit: imageAuditSnapshot(imageAuditResult),
     })
 
     if (lastSavedDraftKeyRef.current === snapshotKey) {
@@ -978,6 +1035,15 @@ export function App() {
           contentText: content,
           brandProfileId: BRAND_PROFILE_ID,
           findings: auditResult.findings,
+          ...(imageAuditResult
+            ? {
+                imageName: imageAuditResult.image.name,
+                imageAltText: imageAltText.trim() || null,
+                imageAuditData: imageAuditSnapshot(imageAuditResult),
+                imageUrl: imageAuditResult.asset?.secureUrl ?? null,
+                imagePublicId: imageAuditResult.asset?.publicId ?? null,
+              }
+            : {}),
         }),
       })
 
@@ -1033,6 +1099,9 @@ export function App() {
       title: submission.title.trim(),
       content: submission.contentText,
       findings: restoredFindings,
+      imageName: submission.imageName ?? null,
+      imageAltText: submission.imageAltText ?? null,
+      imageAudit: imageAuditSnapshot(submission.imageAuditData),
     })
 
     setEditingSubmissionId(submission.id)
@@ -1040,6 +1109,13 @@ export function App() {
     setSelectedSampleId('')
     setDraftTitle(submission.title)
     setContent(submission.contentText)
+    setImageFile(null)
+    setImageAltText(submission.imageAltText ?? '')
+    setImageAuditResult(submission.imageAuditData ?? null)
+        setImagePreviewUrl(
+          submission.imageUrl ?? submission.imageAuditData?.asset?.secureUrl ?? null,
+        )
+    setImageAuditError(null)
     setCategoryFilter('ALL')
     setResolvedGroups({})
     setAuditError(null)
@@ -1064,6 +1140,10 @@ export function App() {
     setDraftTitle('Untitled campaign')
     setDraftChannel('Website')
     setContent('')
+    setImageFile(null)
+    setImageAltText('')
+    setImageAuditResult(null)
+    setImageAuditError(null)
     setAuditResult(null)
     setAuditedContent(null)
     setAuditRestoredFromSubmission(false)
@@ -1389,21 +1469,77 @@ export function App() {
                       </label>
                       <input
                         id="bf-image-file"
-                        className="bf-input"
+                        className="bf-image-file-input"
                         type="file"
                         accept="image/png,image/jpeg,.png,.jpg,.jpeg"
+                        aria-label="Choose a campaign image"
                         onChange={(event) => {
                           const selectedFile = event.currentTarget.files?.[0] ?? null
                           setImageFile(selectedFile)
                           setImageAuditResult(null)
                           setImageAuditError(null)
+
+                          if (imageObjectUrlRef.current) {
+                            URL.revokeObjectURL(imageObjectUrlRef.current)
+                            imageObjectUrlRef.current = null
+                          }
+
+                          if (selectedFile) {
+                            const url = URL.createObjectURL(selectedFile)
+                            imageObjectUrlRef.current = url
+                            setImagePreviewUrl(url)
+                          } else {
+                            setImagePreviewUrl(null)
+                          }
                         }}
                       />
-                      {imageFile && (
-                        <p className="bf-section-meta">
-                          {imageFile.name} · {(imageFile.size / (1024 * 1024)).toFixed(2)} MB
-                        </p>
-                      )}
+                      <label
+                        htmlFor="bf-image-file"
+                        className={`bf-image-preview-bar${imagePreviewUrl ? ' has-image' : ''}`}
+                        tabIndex={0}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            document.getElementById('bf-image-file')?.click()
+                          }
+                        }}
+                      >
+                        {imagePreviewUrl ? (
+                          <>
+                            <img
+                              className="bf-image-preview-thumb"
+                              src={imagePreviewUrl}
+                              alt={imageAltText.trim() || imageAuditResult?.image.name || 'Campaign image preview'}
+                            />
+                            <span className="bf-image-preview-details">
+                              <span className="bf-image-preview-eyebrow">
+                                {imageFile ? 'NEW IMAGE SELECTED' : 'SAVED CAMPAIGN IMAGE'}
+                              </span>
+                              <strong className="bf-image-preview-name">
+                                {imageFile?.name || imageAuditResult?.image.name || 'Campaign image'}
+                              </strong>
+                              <span className="bf-image-preview-help">
+                                {imageFile
+                                  ? `${(imageFile.size / (1024 * 1024)).toFixed(2)} MB · Audit again before saving`
+                                  : 'Saved image · Click to replace'}
+                              </span>
+                            </span>
+                            <span className="bf-image-change-pill">Change image</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="bf-image-upload-mark" aria-hidden="true">↥</span>
+                            <span className="bf-image-preview-details">
+                              <strong className="bf-image-preview-name">Add a campaign image</strong>
+                              <span className="bf-image-preview-help">PNG or JPEG · Up to 5 MB</span>
+                            </span>
+                            <span className="bf-image-change-pill">Browse files</span>
+                          </>
+                        )}
+                      </label>
+                      <p className="bf-section-meta">
+                        Click the preview to replace the image. A replacement must be audited before saving.
+                      </p>
                     </div>
 
                     <div className="bf-field">

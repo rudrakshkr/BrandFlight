@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import type { ImageAuditData } from './types/imageAudit'
 
 interface SubmissionSummary {
   id: string
@@ -8,6 +9,9 @@ interface SubmissionSummary {
   updatedAt: string
   brandProfile: { id: string; name: string }
   _count: { findings: number; comments: number; revisions: number }
+  imageUrl?: string | null
+  imageName?: string | null
+  imageAltText?: string | null
 }
 
 export interface SubmissionDetail {
@@ -17,6 +21,9 @@ export interface SubmissionDetail {
   status: string
   brandProfileId: string
   brandProfile: { id: string; name: string }
+  imageName: string | null
+  imageAltText: string | null
+  imageAuditData: ImageAuditData | null
   findings: Array<{
     category: 'TONE' | 'TERMINOLOGY' | 'CLAIM' | 'VISUAL' | 'ACCESSIBILITY'
     severity: 'INFO' | 'WARNING' | 'ERROR'
@@ -27,6 +34,8 @@ export interface SubmissionDetail {
     ruleCode: string | null
     confidence: string | null
   }>
+  imageUrl: string | null
+  imagePublicId: string | null
 }
 
 interface Props {
@@ -209,6 +218,16 @@ export default function SavedSubmissionsPanel({
                   <span className="bf-saved-brand">{item.brandProfile?.name ?? 'BrandFlight'}</span>
                 </div>
 
+                {item.imageUrl && (
+                  <figure className="bf-saved-image-preview">
+                    <img
+                      src={item.imageUrl}
+                      alt={item.imageAltText?.trim() || item.imageName || `Campaign image for ${item.title}`}
+                      loading="lazy"
+                    />
+                    <figcaption>{item.imageName || "Campaign image"}</figcaption>
+                  </figure>
+                )}
                 <h2 className="bf-saved-title">{item.title}</h2>
 
                 <p className="bf-saved-meta">

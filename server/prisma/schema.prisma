@@ -96,6 +96,9 @@ model Submission {
   contentText    String           @db.Text
   imageName      String?
   imageAltText   String?          @db.Text
+  imageAuditData Json?
+  imageUrl       String?
+  imagePublicId  String?
   status         SubmissionStatus @default(DRAFT)
   brandProfileId String
   brandProfile   BrandProfile     @relation(fields: [brandProfileId], references: [id])
@@ -132,6 +135,11 @@ model Revision {
   id           String     @id @default(cuid())
   version      Int
   contentText  String     @db.Text
+  imageName    String?
+  imageAltText String?    @db.Text
+  imageAuditData Json?
+  imageUrl       String?
+  imagePublicId  String?
   submissionId String
   submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
   authorId     String
