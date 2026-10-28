@@ -242,9 +242,12 @@ submissionsRouter.post(
           },
         });
 
-        for (const finding of findings) {
-          await tx.finding.create({
-            data: { ...finding, submissionId: created.id },
+        if (findings.length > 0) {
+          await tx.finding.createMany({
+            data: findings.map((finding) => ({
+              ...finding,
+              submissionId: created.id,
+            })),
           });
         }
 
@@ -252,7 +255,10 @@ submissionsRouter.post(
           where: { id: created.id },
           include: submissionDetails,
         });
-      });
+      }, {
+      maxWait: 10_000,
+      timeout: 20_000,
+    });
 
       return res.status(201).json({ submission });
     } catch (error) {

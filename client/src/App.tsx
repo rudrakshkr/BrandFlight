@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, type SubmitEvent, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, type SubmitEvent, type ReactNode } from 'react'
 import './App.css'
 import RulebookPanel, { type BrandProfileData } from './RulebookPanel'
 
@@ -346,6 +346,12 @@ export function App() {
   const [isAuditing, setIsAuditing] = useState<boolean>(false)
   const [auditError, setAuditError] = useState<string | null>(null)
   const [auditResult, setAuditResult] = useState<AuditApiResponse | null>(null)
+  const [auditedContent, setAuditedContent] = useState<string | null>(null)
+  const [saveDraftBusy, setSaveDraftBusy] = useState(false)
+  const [saveDraftError, setSaveDraftError] = useState<string | null>(null)
+  const [saveDraftMessage, setSaveDraftMessage] = useState<string | null>(null)
+  const saveInProgressRef = useRef(false)
+  const lastSavedDraftKeyRef = useRef<string | null>(null)
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('ALL')
 
   const [resolvedGroups, setResolvedGroups] = useState<Record<string, string>>({})
@@ -425,6 +431,7 @@ export function App() {
       return
     }
 
+    setAuditedContent(null);
     setIsAuditing(true)
     setAuditError(null)
     setResolvedGroups({})
@@ -454,6 +461,7 @@ export function App() {
       }
 
       setAuditResult(data as AuditApiResponse)
+      setAuditedContent(textToAudit)
       setApiHealth('online')
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unable to reach backend API.'
@@ -717,6 +725,96 @@ export function App() {
     )
   }
 
+  const handleSaveDraft = async () => {
+    if (saveInProgressRef.current) return;
+    setSaveDraftError(null)
+    setSaveDraftMessage(null)
+
+    if (!authSession || authSession.user.role !== 'CREATOR') {
+      setSaveDraftError('Sign in with a Creator account to save drafts.')
+      return
+    }
+
+    if (!draftTitle.trim() || draftTitle.trim().length > 160) {
+      setSaveDraftError('Enter a title between 1 and 160 characters.')
+      return
+    }
+
+    if (!content.trim()) {
+      setSaveDraftError('Enter campaign copy before saving.')
+      return
+    }
+
+    if (!auditResult || auditedContent !== content) {
+      setSaveDraftError(
+        'Run Preflight Audit on the current copy before saving.',
+      )
+      return
+    }
+
+    if (auditResult.findings.length > 20) {
+      setSaveDraftError(
+        'This draft has more than 20 findings. The API currently allows up to 20.',
+      )
+      return
+    }
+
+    const snapshotKey = JSON.stringify({
+      title: draftTitle.trim(),
+      content,
+      findings: auditResult.findings,
+    })
+
+    if (lastSavedDraftKeyRef.current === snapshotKey) {
+      setSaveDraftMessage('This exact draft has already been saved.')
+      return
+    }
+
+    saveInProgressRef.current = true
+    setSaveDraftBusy(true)
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/submissions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authSession.token}`,
+        },
+        body: JSON.stringify({
+          title: draftTitle.trim(),
+          contentText: content,
+          brandProfileId: BRAND_PROFILE_ID,
+          findings: auditResult.findings,
+        }),
+      })
+
+      const data = (await response.json().catch(() => null)) as {
+        submission?: {
+          id: string
+          title: string
+          status: string
+        }
+        error?: string
+      } | null
+
+      if (!response.ok || !data?.submission) {
+        throw new Error(data?.error ?? `Save failed (HTTP ${response.status}).`)
+      }
+
+      lastSavedDraftKeyRef.current = snapshotKey
+      setSaveDraftMessage(
+        `Draft saved successfully. Status: ${data.submission.status}. ID: ${data.submission.id}`,
+      )
+    } catch (error) {
+      setSaveDraftError(
+        error instanceof Error ? error.message : 'Unable to save this draft.',
+      )
+    } finally {
+      saveInProgressRef.current = false
+      setSaveDraftBusy(false)
+    }
+  }
+
   return (
     <div className="bf-layout">
       {/* 1. Redesigned B2B SaaS Header */}
@@ -912,6 +1010,22 @@ export function App() {
                       </button>
 
                       <button
+                        type="button"
+                        className="bf-btn-secondary"
+                        onClick={handleSaveDraft}
+                        disabled={
+                          saveDraftBusy ||
+                          isAuditing ||
+                          !content.trim() ||
+                          !auditResult ||
+                          auditedContent !== content ||
+                          authSession?.user.role !== 'CREATOR'
+                        }
+                      >
+                        {saveDraftBusy ? 'Saving…' : 'Save Draft'}
+                      </button>
+
+                      <button
                         type="submit"
                         className="bf-btn-primary"
                         disabled={isAuditing || !content.trim()}
@@ -919,6 +1033,18 @@ export function App() {
                         {isAuditing ? 'Running audit...' : 'Run Preflight Audit'}
                       </button>
                     </div>
+
+                    {saveDraftError && (
+                      <p className="bf-save-feedback error" role="alert">
+                        {saveDraftError}
+                      </p>
+                    )}
+
+                    {saveDraftMessage && (
+                      <p className="bf-save-feedback success" role="status">
+                        {saveDraftMessage}
+                      </p>
+                    )}
                   </div>
                 </form>
 

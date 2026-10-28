@@ -1595,3 +1595,23 @@
   font-size: 10px;
   letter-spacing: 0.08em;
 }
+
+.bf-save-feedback {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.bf-save-feedback.error {
+  color: var(--status-red-text);
+  background: var(--status-red-bg);
+  border: 1px solid var(--status-red-border);
+}
+
+.bf-save-feedback.success {
+  color: var(--status-green-text);
+  background: var(--status-green-bg);
+  border: 1px solid var(--status-green-border);
+}
