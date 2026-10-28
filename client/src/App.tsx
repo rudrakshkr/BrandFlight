@@ -1,10 +1,23 @@
-import { useState, useEffect, useCallback, useMemo, type FormEvent, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, useMemo, type SubmitEvent, type ReactNode } from 'react'
 import './App.css'
 import RulebookPanel, { type BrandProfileData } from './RulebookPanel'
 
 type RuleCategory = 'TONE' | 'TERMINOLOGY' | 'CLAIM' | 'VISUAL' | 'ACCESSIBILITY'
 type FindingSeverity = 'INFO' | 'WARNING' | 'ERROR'
 type ActiveView = 'workspace' | 'rulebook'
+type AuthRole = 'CREATOR' | 'REVIEWER' | 'MANAGER'
+
+interface AuthUser {
+  id: string
+  name: string
+  email: string
+  role: AuthRole
+}
+
+interface AuthSession {
+  token: string
+  user: AuthUser
+}
 type CategoryFilter = 'ALL' | 'OPEN' | 'CLAIM' | 'TERMINOLOGY' | 'TONE'
 
 interface RawAuditFinding {
@@ -308,6 +321,12 @@ function BrandFlightMark(): ReactNode {
 }
 
 export function App() {
+  const [authSession, setAuthSession] = useState<AuthSession | null>(null)
+  const [authChecking, setAuthChecking] = useState(true)
+  const [loginEmail, setLoginEmail] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginBusy, setLoginBusy] = useState(false)
+  const [loginError, setLoginError] = useState<string | null>(null)
   const [activeView, setActiveView] = useState<ActiveView>('workspace')
   const [brandProfile, setBrandProfile] = useState<BrandProfileData | null>(null)
   const [imageFile, setImageFile] = useState<File | null>(null)
@@ -340,6 +359,49 @@ export function App() {
     note: '',
     timestamp: null,
   })
+
+  useEffect(() => {
+    const token = window.sessionStorage.getItem('brandflight_token')
+
+    if (!token) {
+      setAuthChecking(false)
+      return
+    }
+
+    const sessionToken: string = token
+
+    let cancelled = false
+
+    async function restoreSession() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/auth/me`, {
+          headers: { Authorization: `Bearer ${sessionToken}` },
+        })
+
+        if (!response.ok) {
+          throw new Error('Session expired')
+        }
+
+        const data = (await response.json()) as { user: AuthUser }
+
+        if (!cancelled) {
+          setAuthSession({ token: sessionToken, user: data.user })
+        }
+      } catch {
+        window.sessionStorage.removeItem('brandflight_token')
+      } finally {
+        if (!cancelled) {
+          setAuthChecking(false)
+        }
+      }
+    }
+
+    void restoreSession()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     let ignore = false
@@ -404,7 +466,7 @@ export function App() {
     }
   }, [])
 
-  const handleImageAuditSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const handleImageAuditSubmit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
 
     if (!imageFile) {
@@ -490,7 +552,7 @@ export function App() {
     void runBackendAudit(sample.content)
   }
 
-  const handleAuditSubmit = (e: FormEvent) => {
+  const handleAuditSubmit = (e: SubmitEvent) => {
     e.preventDefault()
     void runBackendAudit(content)
   }
@@ -537,6 +599,122 @@ export function App() {
           : 'Revisions requested to align claims and terminology with brand guidelines.'),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     })
+  }
+
+  const handleLogin = async (event: SubmitEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setLoginBusy(true)
+    setLoginError(null)
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: loginEmail,
+          password: loginPassword,
+        }),
+      })
+
+      const data = (await response.json().catch(() => null)) as {
+        token?: string
+        user?: AuthUser
+        error?: string
+      } | null
+
+      if (!response.ok || !data?.token || !data.user) {
+        throw new Error(data?.error ?? 'Login failed. Check your credentials.')
+      }
+
+      window.sessionStorage.setItem('brandflight_token', data.token)
+      setAuthSession({ token: data.token, user: data.user })
+      setLoginPassword('')
+      setActiveView('workspace')
+    } catch (error) {
+      setLoginError(
+        error instanceof Error ? error.message : 'Unable to log in.',
+      )
+    } finally {
+      setLoginBusy(false)
+    }
+  }
+
+  const handleLogout = () => {
+    window.sessionStorage.removeItem('brandflight_token')
+    setAuthSession(null)
+    setLoginPassword('')
+    setLoginError(null)
+    setActiveView('workspace')
+  }
+
+  if (authChecking) {
+    return (
+      <div className="bf-auth-screen">
+        <div className="bf-auth-card">
+          <span className="bf-auth-kicker">BRANDFLIGHT</span>
+          <h1>Checking session</h1>
+          <p>Verifying your sign-in…</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!authSession) {
+    return (
+      <div className="bf-auth-screen">
+        <form className="bf-auth-card" onSubmit={handleLogin}>
+          <span className="bf-auth-kicker">CONTENT PREFLIGHT</span>
+          <h1 className="bf-auth-title">Welcome to BrandFlight</h1>
+          <p className="bf-auth-subtitle">
+            Sign in to review campaign content against your brand rules.
+          </p>
+
+          <label className="bf-auth-label" htmlFor="login-email">
+            Email
+          </label>
+          <input
+            id="login-email"
+            className="bf-auth-input"
+            type="email"
+            autoComplete="username"
+            value={loginEmail}
+            onChange={(event) => setLoginEmail(event.target.value)}
+            required
+          />
+
+          <label className="bf-auth-label" htmlFor="login-password">
+            Password
+          </label>
+          <input
+            id="login-password"
+            className="bf-auth-input"
+            type="password"
+            autoComplete="current-password"
+            value={loginPassword}
+            onChange={(event) => setLoginPassword(event.target.value)}
+            required
+          />
+
+          {loginError && (
+            <p className="bf-auth-error" role="alert">
+              {loginError}
+            </p>
+          )}
+
+          <button
+            className="bf-auth-submit"
+            type="submit"
+            disabled={loginBusy}
+          >
+            {loginBusy ? 'Signing in…' : 'Sign in'}
+          </button>
+
+          <p className="bf-auth-footnote">
+            Use one of the configured BrandFlight demo accounts.
+          </p>
+        </form>
+      </div>
+    )
   }
 
   return (
@@ -586,6 +764,23 @@ export function App() {
                   ? 'API Offline'
                   : 'Checking API...'}
             </span>
+            <span className="bf-header-divider" aria-hidden="true" />
+            <div className="bf-auth-user">
+              <span className="bf-auth-user-name">
+                {authSession.user.name}
+              </span>
+              <span className="bf-auth-user-role">
+                {authSession.user.role}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              className="bf-nav-link"
+              onClick={handleLogout}
+            >
+              Sign out
+            </button>
           </div>
         </div>
       </header>
