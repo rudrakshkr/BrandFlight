@@ -987,15 +987,22 @@ submissionsRouter.post(
         });
       }
 
-      const submission = await prisma.$transaction(async (tx) => {
-        const updated = await tx.submission.update({
-          where: { id: current.id },
+      const reviewResult = await prisma.$transaction(async (tx) => {
+        // Compare-and-set the state: only one reviewer can decide an IN_REVIEW
+        // submission. A concurrent/replayed decision cannot overwrite the winner.
+        const reviewTransition = await tx.submission.updateMany({
+          where: { id: current.id, status: "IN_REVIEW" },
           data: {
             status,
             reviewerId: req.authUser!.id,
           },
         });
 
+        if (reviewTransition.count !== 1) {
+          return { conflict: true as const };
+        }
+
+        // Keep the review note atomic with the status transition.
         if (typeof note === "string" && note.trim()) {
           await tx.comment.create({
             data: {
@@ -1006,13 +1013,20 @@ submissionsRouter.post(
           });
         }
 
-        return tx.submission.findUnique({
-          where: { id: updated.id },
+        const submission = await tx.submission.findUnique({
+          where: { id: current.id },
           include: submissionDetails,
         });
+        return { conflict: false as const, submission };
       });
 
-      return res.json({ submission });
+      if (reviewResult.conflict) {
+        return res.status(409).json({
+          error: "Review decision was already recorded. Refresh the queue to see the latest status.",
+        });
+      }
+
+      return res.json({ submission: reviewResult.submission });
     } catch (error) {
       return handleError(res, error, "Unable to record review decision.");
     }
