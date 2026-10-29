@@ -15,3 +15,7 @@ server/.agents/
 server/.claude/
 server/.windsurf/
 server/skills-lock.json
+/.brandflight-backups/
+/repomix-output*.xml
+/client/src/*.backup-*
+/client/src/*.brandflight-backup-*

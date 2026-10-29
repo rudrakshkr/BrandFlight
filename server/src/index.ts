@@ -11,7 +11,7 @@ import { submissionsRouter } from "./routes/submissions.js";
 import { imageAuditRouter } from "./routes/image-audit.js";
 import { requireAuth, requireRoles } from "./middleware/auth.js";
 
-const app = express();
+export const app = express();
 
 app.use(cors({ origin: process.env.CLIENT_URL ?? "http://localhost:5173" }));
 app.use(express.json({ limit: "1mb" }));
@@ -214,8 +214,10 @@ app.post("/api/audit", requireAuth, requireRoles("CREATOR"), async (req, res) =>
   }
 });
 
-const port = Number(process.env.PORT ?? 3000);
-
-app.listen(port, () => {
-  console.log(`BrandFlight API running on port ${port}`);
-});
+// Exporting the Express app lets tests exercise routes without an import side effect.
+if (process.env.NODE_ENV !== "test") {
+  const port = Number(process.env.PORT ?? 3000);
+  app.listen(port, () => {
+    console.log(`BrandFlight API running on port ${port}`);
+  });
+}

@@ -2,6 +2,7 @@ import { Router, type Response } from "express";
 import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { auditConfigHash, imageAuditInputHash, sha256Text } from "../lib/audit-receipts.js";
+import { validateReviewDecision } from "../lib/review-validation.js";
 import {
   requireAuth,
   requireRoles,
@@ -954,23 +955,12 @@ submissionsRouter.post(
       return res.status(400).json({ error: "A JSON object is required." });
     }
 
-    const { status, note } = body;
-
-    if (
-      status !== "APPROVED" &&
-      status !== "CHANGES_REQUESTED"
-    ) {
-      return res.status(400).json({
-        error: "Status must be APPROVED or CHANGES_REQUESTED.",
-      });
+    const decision = validateReviewDecision(body.status, body.note);
+    if (!decision.valid) {
+      return res.status(400).json({ error: decision.error });
     }
 
-    if (
-      note !== undefined &&
-      (typeof note !== "string" || note.length > 2000)
-    ) {
-      return res.status(400).json({ error: "Review note must be 2,000 characters or fewer." });
-    }
+    const { status, note } = decision;
 
     try {
       const current = await prisma.submission.findUnique({
