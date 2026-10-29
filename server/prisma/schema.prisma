@@ -34,6 +34,11 @@ enum FindingSeverity {
   ERROR
 }
 
+enum AuditReceiptKind {
+  TEXT
+  IMAGE
+}
+
 model User {
   id                 String       @id @default(cuid())
   name               String
@@ -46,6 +51,7 @@ model User {
   reviewedSubmissions Submission[] @relation("SubmissionReviewer")
   revisions          Revision[]   @relation("RevisionAuthor")
   comments           Comment[]
+  auditReceipts      AuditReceipt[]
 }
 
 model BrandProfile {
@@ -59,6 +65,27 @@ model BrandProfile {
   rules       BrandRule[]
   facts       ApprovedFact[]
   submissions Submission[]
+  auditReceipts AuditReceipt[]
+  assets       BrandAsset[]
+}
+
+model BrandAsset {
+  id               String       @id @default(cuid())
+  assetType        String       @default("PRIMARY_LOGO")
+  name             String
+  format           String
+  secureUrl        String
+  publicId         String
+  expectedWordmark String?
+  description      String?      @db.Text
+  isRequired       Boolean      @default(false)
+  brandProfileId   String
+  brandProfile     BrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@unique([brandProfileId, assetType])
+  @@index([brandProfileId])
 }
 
 model BrandRule {
@@ -100,6 +127,10 @@ model Submission {
   imageAuditData Json?
   imageUrl       String?
   imagePublicId  String?
+  textAuditReceiptId String?
+  textAuditReceipt AuditReceipt? @relation("SubmissionTextAudit", fields: [textAuditReceiptId], references: [id], onDelete: SetNull)
+  imageAuditReceiptId String?
+  imageAuditReceipt AuditReceipt? @relation("SubmissionImageAudit", fields: [imageAuditReceiptId], references: [id], onDelete: SetNull)
   status         SubmissionStatus @default(DRAFT)
   brandProfileId String
   brandProfile   BrandProfile     @relation(fields: [brandProfileId], references: [id])
@@ -158,4 +189,22 @@ model Comment {
   authorId     String
   author       User       @relation(fields: [authorId], references: [id])
   createdAt    DateTime   @default(now())
+}
+
+model AuditReceipt {
+  id             String           @id
+  kind           AuditReceiptKind
+  userId         String
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brandProfileId String
+  brandProfile   BrandProfile     @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  inputHash      String
+  configHash     String
+  result         Json
+  createdAt      DateTime         @default(now())
+  textSubmissions Submission[]    @relation("SubmissionTextAudit")
+  imageSubmissions Submission[]   @relation("SubmissionImageAudit")
+
+  @@index([userId, kind, createdAt])
+  @@index([brandProfileId, kind, createdAt])
 }

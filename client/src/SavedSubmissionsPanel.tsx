@@ -39,6 +39,8 @@ export interface SubmissionDetail {
   }>
   imageUrl: string | null
   imagePublicId: string | null
+  textAuditReceiptId?: string | null
+  imageAuditReceiptId?: string | null
   tags?: string[]
   comments: Array<{
     id: string

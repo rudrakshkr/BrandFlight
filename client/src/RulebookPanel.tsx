@@ -26,6 +26,18 @@ export interface ApprovedFact {
   isActive: boolean
 }
 
+export interface ApprovedBrandAsset {
+  id: string
+  assetType: string
+  name: string
+  format: string
+  secureUrl: string
+  publicId: string
+  expectedWordmark: string | null
+  description: string | null
+  isRequired: boolean
+}
+
 export interface BrandProfileData {
   id: string
   name: string
@@ -33,13 +45,13 @@ export interface BrandProfileData {
   brandColors: string[]
   rules: RulebookRule[]
   facts: ApprovedFact[]
+  assets: ApprovedBrandAsset[]
 }
 
 interface RulebookPanelProps {
   apiBaseUrl: string
   brandProfileId: string
   onBrandLoaded: (brand: BrandProfileData) => void
-  onBack: () => void
 }
 
 interface RuleDraft {
@@ -96,7 +108,7 @@ async function apiRequest<T>(
     headers.set('Authorization', `Bearer ${token}`)
   }
 
-  if (init.body && !headers.has('Content-Type')) {
+  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
 
@@ -127,7 +139,6 @@ export default function RulebookPanel({
   apiBaseUrl,
   brandProfileId,
   onBrandLoaded,
-  onBack,
 }: RulebookPanelProps) {
   const basePath = `/api/brands/${encodeURIComponent(brandProfileId)}`
 
@@ -135,6 +146,11 @@ export default function RulebookPanel({
   const [brandName, setBrandName] = useState('')
   const [description, setDescription] = useState('')
   const [colorsText, setColorsText] = useState('')
+  const [logoFile, setLogoFile] = useState<File | null>(null)
+  const [logoWordmark, setLogoWordmark] = useState('')
+  const [logoDescription, setLogoDescription] = useState('')
+  const [logoRequired, setLogoRequired] = useState(false)
+  const [logoBusy, setLogoBusy] = useState(false)
 
   const [ruleDraft, setRuleDraft] = useState<RuleDraft>(EMPTY_RULE)
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null)
@@ -162,6 +178,10 @@ export default function RulebookPanel({
       setBrandName(result.name)
       setDescription(result.description ?? '')
       setColorsText(result.brandColors.join(', '))
+      const primaryLogo = (result.assets ?? []).find((asset) => asset.assetType === 'PRIMARY_LOGO')
+      setLogoWordmark(primaryLogo?.expectedWordmark ?? '')
+      setLogoDescription(primaryLogo?.description ?? '')
+      setLogoRequired(primaryLogo?.isRequired ?? false)
       onBrandLoaded(result)
 
       return result
@@ -216,6 +236,65 @@ export default function RulebookPanel({
       setError(errorMessage(err))
     } finally {
       setIsBusy(false)
+    }
+  }
+
+  const primaryLogo = brand?.assets?.find((asset) => asset.assetType === 'PRIMARY_LOGO') ?? null
+
+  const handleSaveLogo = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setLogoBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      if (logoFile) {
+        const form = new FormData()
+        form.append('logo', logoFile)
+        form.append('expectedWordmark', logoWordmark.trim())
+        form.append('description', logoDescription.trim())
+        form.append('isRequired', String(logoRequired))
+        await apiRequest<ApprovedBrandAsset>(apiBaseUrl, `${basePath}/assets/logo`, {
+          method: 'POST',
+          body: form,
+        })
+        setLogoFile(null)
+        await refreshAfterMutation('Official brand logo uploaded and saved.')
+      } else if (primaryLogo) {
+        await apiRequest<ApprovedBrandAsset>(apiBaseUrl, `${basePath}/assets/logo`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            expectedWordmark: logoWordmark.trim() || null,
+            description: logoDescription.trim() || null,
+            isRequired: logoRequired,
+          }),
+        })
+        await refreshAfterMutation('Approved logo settings saved.')
+      } else {
+        setError('Choose the official logo image before saving.')
+      }
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setLogoBusy(false)
+    }
+  }
+
+  const handleRemoveLogo = async () => {
+    if (!primaryLogo || !window.confirm('Remove the approved logo reference? Future image audits will not be able to verify logo identity.')) return
+    setLogoBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      await apiRequest(apiBaseUrl, `${basePath}/assets/logo`, { method: 'DELETE' })
+      setLogoFile(null)
+      setLogoWordmark('')
+      setLogoDescription('')
+      setLogoRequired(false)
+      await refreshAfterMutation('Approved logo reference removed.')
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setLogoBusy(false)
     }
   }
 
@@ -446,9 +525,6 @@ export default function RulebookPanel({
             </p>
           </div>
 
-          <button type="button" className="bf-btn-primary" onClick={onBack}>
-            Back to Audit Workspace
-          </button>
         </div>
 
         <div className="bf-card-body">
@@ -551,6 +627,52 @@ export default function RulebookPanel({
                     </button>
                   </div>
                 </form>
+              </section>
+
+              <section className="bf-rulebook-section bf-brand-assets-section">
+                <div className="bf-rulebook-section-heading">
+                  <div>
+                    <h2 className="bf-section-title">Approved Brand Assets</h2>
+                    <p className="bf-section-meta">Upload the official logo so campaign images can be checked against the real reference, not just the brand palette.</p>
+                  </div>
+                  {primaryLogo && <span className="bf-brand-asset-status">Official reference saved</span>}
+                </div>
+
+                <div className="bf-brand-asset-layout">
+                  <div className="bf-brand-asset-preview">
+                    {primaryLogo ? (
+                      <img src={primaryLogo.secureUrl} alt={`Approved ${brand.name} logo reference`} />
+                    ) : (
+                      <div className="bf-brand-asset-placeholder"><span aria-hidden="true">◈</span><strong>No official logo yet</strong><small>Upload a transparent PNG when possible.</small></div>
+                    )}
+                    {primaryLogo && <div className="bf-brand-asset-file"><strong>{primaryLogo.name}</strong><span>{primaryLogo.format.toUpperCase()} · Primary logo</span></div>}
+                  </div>
+
+                  <form className="bf-rulebook-form bf-brand-asset-form" onSubmit={(event) => void handleSaveLogo(event)}>
+                    <div className="bf-field bf-rulebook-full-width">
+                      <label className="bf-label" htmlFor="bf-primary-logo-file">Official logo file</label>
+                      <input id="bf-primary-logo-file" className="bf-input" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setLogoFile(event.target.files?.[0] ?? null)} />
+                      <p className="bf-section-meta">PNG, JPEG or WebP · max 5 MB. Selecting a new file replaces the current reference.</p>
+                    </div>
+                    <div className="bf-field bf-rulebook-full-width">
+                      <label className="bf-label" htmlFor="bf-primary-logo-wordmark">Expected wordmark (optional)</label>
+                      <input id="bf-primary-logo-wordmark" className="bf-input" value={logoWordmark} onChange={(event) => setLogoWordmark(event.target.value)} maxLength={120} placeholder="e.g. PahariKnits" />
+                      <p className="bf-section-meta">Used to check visible spelling when the campaign image makes the text legible.</p>
+                    </div>
+                    <div className="bf-field bf-rulebook-full-width">
+                      <label className="bf-label" htmlFor="bf-primary-logo-description">Logo usage notes (optional)</label>
+                      <textarea id="bf-primary-logo-description" className="bf-input bf-rulebook-textarea" value={logoDescription} onChange={(event) => setLogoDescription(event.target.value)} maxLength={1000} placeholder="e.g. Use the navy-and-teal mark; do not stretch or recolor." />
+                    </div>
+                    <label className="bf-brand-asset-required">
+                      <input type="checkbox" checked={logoRequired} onChange={(event) => setLogoRequired(event.target.checked)} />
+                      <span><strong>Logo required on campaign images</strong><small>If enabled, missing or mismatched logos are flagged more strongly.</small></span>
+                    </label>
+                    <div className="bf-editor-actions bf-brand-asset-actions">
+                      <button className="bf-btn-primary" type="submit" disabled={logoBusy || (!logoFile && !primaryLogo)}>{logoBusy ? 'Saving logo…' : logoFile ? 'Upload and save logo' : 'Save logo settings'}</button>
+                      {primaryLogo && <button className="bf-btn-secondary" type="button" onClick={() => void handleRemoveLogo()} disabled={logoBusy}>Remove reference</button>}
+                    </div>
+                  </form>
+                </div>
               </section>
 
               <section className="bf-rulebook-section">

@@ -6,10 +6,11 @@ import RulebookPanel, { type BrandProfileData } from './RulebookPanel'
 import SavedSubmissionsPanel, { type SubmissionDetail } from './SavedSubmissionsPanel'
 import ReviewQueuePanel from './ReviewQueuePanel'
 import ManagerDashboard from './ManagerDashboard'
+import ApprovedCampaignsPanel from './ApprovedCampaignsPanel'
 
 type RuleCategory = 'TONE' | 'TERMINOLOGY' | 'CLAIM' | 'VISUAL' | 'ACCESSIBILITY'
 type FindingSeverity = 'INFO' | 'WARNING' | 'ERROR'
-type ActiveView = 'workspace' | 'image' | 'rulebook' | 'submissions' | 'review' | 'manager'
+type ActiveView = 'workspace' | 'image' | 'rulebook' | 'submissions' | 'review' | 'manager' | 'approved'
 
 const ROUTE_BY_VIEW: Record<ActiveView, string> = {
   workspace: '/audit/text',
@@ -18,6 +19,7 @@ const ROUTE_BY_VIEW: Record<ActiveView, string> = {
   submissions: '/submissions',
   review: '/review',
   manager: '/manager',
+  approved: '/approved-campaigns',
 }
 
 const VIEW_BY_PATH: Record<string, ActiveView> = {
@@ -29,6 +31,7 @@ const VIEW_BY_PATH: Record<string, ActiveView> = {
   '/submissions': 'submissions',
   '/review': 'review',
   '/manager': 'manager',
+  '/approved-campaigns': 'approved',
 }
 type AuthRole = 'CREATOR' | 'REVIEWER' | 'MANAGER'
 
@@ -84,6 +87,7 @@ interface ConsolidatedFinding {
 }
 
 interface AuditApiResponse {
+  auditReceiptId?: string
   brand: {
     id: string
     name: string
@@ -114,9 +118,11 @@ function imageAuditSnapshot(data: ImageAuditApiResponse | null | undefined) {
       height: data.image.height,
       dominantColors: data.image.dominantColors,
       approvedColors: data.image.approvedColors,
+      colorAnalysis: data.image.colorAnalysis,
       altTextLength: data.image.altTextLength,
     },
     totalFindings: data.totalFindings,
+    logoVerification: data.logoVerification ?? null,
     findings: data.findings.map((finding) => ({
       category: finding.category,
       severity: finding.severity,
@@ -133,6 +139,9 @@ function imageAuditSnapshot(data: ImageAuditApiResponse | null | undefined) {
 const API_BASE_URL =
   (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/+$/, '') ||
   'http://localhost:3000'
+
+const DEMO_ACCESS_ENABLED = import.meta.env.DEV ||
+  (import.meta.env.VITE_DEMO_MODE as string | undefined)?.trim().toLowerCase() === 'true'
 
 const BRAND_PROFILE_ID = 'brandflight-demo'
 
@@ -422,6 +431,8 @@ export function App() {
   const [loginPassword, setLoginPassword] = useState('')
   const [loginBusy, setLoginBusy] = useState(false)
   const [loginError, setLoginError] = useState<string | null>(null)
+  const [demoLoginBusyRole, setDemoLoginBusyRole] = useState<AuthRole | null>(null)
+  const [demoLoginError, setDemoLoginError] = useState<string | null>(null)
   const [editingSubmissionId, setEditingSubmissionId] = useState<string | null>(null)
   const [submissionComments, setSubmissionComments] = useState<SubmissionDetail['comments']>([])
   const [routeDraftLoadedId, setRouteDraftLoadedId] = useState<string | null>(null)
@@ -453,6 +464,7 @@ export function App() {
   const [saveDraftBusy, setSaveDraftBusy] = useState(false)
   const [saveDraftError, setSaveDraftError] = useState<string | null>(null)
   const [saveDraftMessage, setSaveDraftMessage] = useState<string | null>(null)
+  const [savedSubmissionsNudge, setSavedSubmissionsNudge] = useState(false)
   const saveInProgressRef = useRef(false)
   const lastSavedDraftKeyRef = useRef<string | null>(null)
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('ALL')
@@ -466,6 +478,12 @@ export function App() {
   const [overrideReason, setOverrideReason] = useState('')
   const [overrideBusy, setOverrideBusy] = useState(false)
   const [overrideError, setOverrideError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!saveDraftMessage) return
+    const timeoutId = window.setTimeout(() => setSaveDraftMessage(null), 6000)
+    return () => window.clearTimeout(timeoutId)
+  }, [saveDraftMessage])
 
   useEffect(() => {
     const token = window.sessionStorage.getItem('brandflight_token')
@@ -537,7 +555,8 @@ export function App() {
     if (!activeView) return
 
     const canAccessView =
-      authSession.user.role === 'CREATOR'
+      activeView === 'approved' ||
+      (authSession.user.role === 'CREATOR'
         ? activeView === 'workspace' ||
           activeView === 'image' ||
           activeView === 'submissions'
@@ -545,7 +564,7 @@ export function App() {
           ? activeView === 'review'
           : activeView === 'manager' ||
             activeView === 'review' ||
-            activeView === 'rulebook'
+            activeView === 'rulebook')
 
     if (!canAccessView) {
       navigate(roleHomePath, { replace: true })
@@ -610,6 +629,8 @@ export function App() {
           title: submission.title.trim(),
           content: submission.contentText,
           findings: restoredFindings,
+          textAuditReceiptId: submission.textAuditReceiptId ?? null,
+          imageAuditReceiptId: submission.imageAuditReceiptId ?? null,
           imageName: submission.imageName ?? null,
           imageAssetId: submission.imagePublicId ?? null,
           imageAltText: submission.imageAltText ?? null,
@@ -635,6 +656,7 @@ export function App() {
           submission.imageAuditData
             ? {
                 ...submission.imageAuditData,
+                auditReceiptId: submission.imageAuditReceiptId ?? undefined,
                 asset: submission.imageUrl && submission.imagePublicId
                   ? { secureUrl: submission.imageUrl, publicId: submission.imagePublicId }
                   : submission.imageAuditData.asset,
@@ -652,6 +674,7 @@ export function App() {
           totalFindings: restoredFindings.length,
           findings: restoredFindings,
           semanticStatus: 'unavailable',
+          auditReceiptId: submission.textAuditReceiptId ?? undefined,
         })
         setAuditedContent(submission.contentText)
         setAuditRestoredFromSubmission(true)
@@ -677,6 +700,18 @@ export function App() {
     routeDraftLoadedId,
     navigate,
   ])
+
+  /* BrandFlight save toast waits for editor route */
+  useEffect(() => {
+    if (!routeSubmissionId || routeDraftLoadedId !== routeSubmissionId) return
+    const timeoutId = window.setTimeout(() => {
+      const pendingMessage = window.sessionStorage.getItem('brandflight_pending_save_toast')
+      if (!pendingMessage) return
+      window.sessionStorage.removeItem('brandflight_pending_save_toast')
+      setSaveDraftMessage(pendingMessage)
+    }, 0)
+    return () => window.clearTimeout(timeoutId)
+  }, [routeSubmissionId, routeDraftLoadedId])
 
   useEffect(() => {
     let ignore = false
@@ -1079,6 +1114,49 @@ export function App() {
     }
   }
 
+  const handleDemoLogin = async (role: AuthRole) => {
+    if (demoLoginBusyRole !== null || loginBusy) return
+    setDemoLoginBusyRole(role)
+    setLoginError(null)
+    setDemoLoginError(null)
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/auth/demo-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role }),
+      })
+      const data = (await response.json().catch(() => null)) as {
+        token?: string
+        user?: AuthUser
+        error?: string
+      } | null
+
+      if (!response.ok || !data?.token || !data.user || data.user.role !== role) {
+        throw new Error(data?.error ?? 'Unable to enter this demo role.')
+      }
+
+      window.sessionStorage.setItem('brandflight_token', data.token)
+      setAuthSession({ token: data.token, user: data.user })
+      setLoginPassword('')
+      setPendingManagerSubmissionId(null)
+      setLoginError(null)
+      setDemoLoginError(null)
+      const roleHomePath = role === 'CREATOR'
+        ? ROUTE_BY_VIEW.workspace
+        : role === 'REVIEWER'
+          ? ROUTE_BY_VIEW.review
+          : ROUTE_BY_VIEW.manager
+      navigate(roleHomePath, { replace: true })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to enter this demo role.'
+      if (authSession) setDemoLoginError(message)
+      else setLoginError(message)
+    } finally {
+      setDemoLoginBusyRole(null)
+    }
+  }
+
   const handleLogout = () => {
     window.sessionStorage.removeItem('brandflight_token')
     setAuthSession(null)
@@ -1109,6 +1187,56 @@ export function App() {
             Sign in to review campaign content against your brand rules.
           </p>
 
+          {DEMO_ACCESS_ENABLED && (
+            <section className="bf-demo-access" aria-labelledby="bf-demo-access-title">
+              <div className="bf-demo-access-heading">
+                <h2 id="bf-demo-access-title">Explore the demo</h2>
+                <p>Choose a role to enter directly. No password required.</p>
+              </div>
+              <div className="bf-demo-role-grid">
+                <button
+                  type="button"
+                  className="bf-demo-role-button creator"
+                  onClick={() => void handleDemoLogin('CREATOR')}
+                  disabled={loginBusy || demoLoginBusyRole !== null}
+                >
+                  <span className="bf-demo-role-mark" aria-hidden="true">CR</span>
+                  <span className="bf-demo-role-copy"><strong>Creator</strong><small>Draft and audit campaign content</small></span>
+                  <span className="bf-demo-role-arrow" aria-hidden="true">{demoLoginBusyRole === 'CREATOR' ? 'Opening…' : '→'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="bf-demo-role-button reviewer"
+                  onClick={() => void handleDemoLogin('REVIEWER')}
+                  disabled={loginBusy || demoLoginBusyRole !== null}
+                >
+                  <span className="bf-demo-role-mark" aria-hidden="true">RV</span>
+                  <span className="bf-demo-role-copy"><strong>Reviewer</strong><small>Review submissions and add comments</small></span>
+                  <span className="bf-demo-role-arrow" aria-hidden="true">{demoLoginBusyRole === 'REVIEWER' ? 'Opening…' : '→'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="bf-demo-role-button manager"
+                  onClick={() => void handleDemoLogin('MANAGER')}
+                  disabled={loginBusy || demoLoginBusyRole !== null}
+                >
+                  <span className="bf-demo-role-mark" aria-hidden="true">MG</span>
+                  <span className="bf-demo-role-copy"><strong>Manager</strong><small>Manage the workspace and brand rules</small></span>
+                  <span className="bf-demo-role-arrow" aria-hidden="true">{demoLoginBusyRole === 'MANAGER' ? 'Opening…' : '→'}</span>
+                </button>
+              </div>
+            </section>
+          )}
+
+          {loginError && (
+            <p className="bf-auth-error" role="alert">
+              {loginError}
+            </p>
+          )}
+
+          <details className="bf-auth-credentials" open={!DEMO_ACCESS_ENABLED}>
+            <summary>Sign in with an account</summary>
+            <div className="bf-auth-credential-fields">
           <label className="bf-auth-label" htmlFor="login-email">
             Email
           </label>
@@ -1135,23 +1263,19 @@ export function App() {
             required
           />
 
-          {loginError && (
-            <p className="bf-auth-error" role="alert">
-              {loginError}
-            </p>
-          )}
-
           <button
             className="bf-auth-submit"
             type="submit"
-            disabled={loginBusy}
+            disabled={loginBusy || demoLoginBusyRole !== null}
           >
             {loginBusy ? 'Signing in…' : 'Sign in'}
           </button>
 
           <p className="bf-auth-footnote">
-            Use one of the configured BrandFlight demo accounts.
+            Use the credentials provided for your BrandFlight account.
           </p>
+            </div>
+          </details>
         </form>
       </div>
     )
@@ -1177,30 +1301,19 @@ export function App() {
       return
     }
 
-    if (!auditResult || auditedContent !== content) {
-      setSaveDraftError(
-        'Run Preflight Audit on the current copy before saving.',
-      )
-      return
-    }
+    const hasFreshTextAudit = Boolean(
+      auditResult && auditedContent === content && auditResult.auditReceiptId,
+    )
+    const findingsToSave = hasFreshTextAudit && auditResult ? auditResult.findings : []
 
-    if (auditResult.findings.length > 20) {
-      setSaveDraftError(
-        'This draft has more than 20 findings. The API currently allows up to 20.',
-      )
+    if (findingsToSave.length > 20) {
+      setSaveDraftError('This audited draft has more than 20 findings. The API currently allows up to 20.');
       return
     }
 
     if (imageFile && !imageAuditResult) {
       setSaveDraftError(
         'Run the image audit before saving the newly selected image.',
-      )
-      return
-    }
-
-    if (imageAuditResult && auditedImageAltText !== imageAltText) {
-      setSaveDraftError(
-        'The alt text changed after its image audit. Run the image audit again before saving.',
       )
       return
     }
@@ -1214,18 +1327,26 @@ export function App() {
       return
     }
 
+
+    const hasFreshImageAudit = Boolean(
+      imageAuditResult && auditedImageAltText === imageAltText && imageAuditResult.auditReceiptId &&
+      imageAuditResult.asset?.secureUrl && imageAuditResult.asset?.publicId,
+    )
     const snapshotKey = JSON.stringify({
       title: draftTitle.trim(),
       content,
-      findings: auditResult.findings,
+      findings: findingsToSave,
+      textAuditReceiptId: hasFreshTextAudit ? auditResult?.auditReceiptId ?? null : null,
+      imageAuditReceiptId: hasFreshImageAudit ? imageAuditResult?.auditReceiptId ?? null : null,
       imageName: imageAuditResult?.image.name ?? null,
       imageAssetId: imageAuditResult?.asset?.publicId ?? null,
-      imageAltText: imageAuditResult ? imageAltText : null,
-      imageAudit: imageAuditSnapshot(imageAuditResult),
+      imageAltText: imageAuditResult ? imageAltText.trim() || null : null,
+      imageAudit: hasFreshImageAudit ? imageAuditSnapshot(imageAuditResult) : null,
     })
 
     if (lastSavedDraftKeyRef.current === snapshotKey) {
-      setSaveDraftMessage('This exact draft has already been saved.')
+      setSavedSubmissionsNudge(true)
+      setSaveDraftMessage('This draft is already saved. Open Saved Submissions to continue.')
       return
     }
 
@@ -1248,12 +1369,14 @@ export function App() {
           title: draftTitle.trim(),
           contentText: content,
           brandProfileId: BRAND_PROFILE_ID,
-          findings: auditResult.findings,
+          findings: findingsToSave,
+          textAuditReceiptId: hasFreshTextAudit ? auditResult?.auditReceiptId ?? null : null,
+          imageAuditReceiptId: hasFreshImageAudit ? imageAuditResult?.auditReceiptId ?? null : null,
           ...(imageAuditResult
             ? {
                 imageName: imageAuditResult.image.name,
                 imageAltText: imageAltText.trim() || null,
-                imageAuditData: imageAuditSnapshot(imageAuditResult),
+                imageAuditData: hasFreshImageAudit ? imageAuditSnapshot(imageAuditResult) : null,
                 imageUrl: imageAuditResult.asset?.secureUrl ?? null,
                 imagePublicId: imageAuditResult.asset?.publicId ?? null,
               }
@@ -1266,6 +1389,9 @@ export function App() {
           id: string
           title: string
           status: string
+          textAuditReceiptId?: string | null
+          imageAuditReceiptId?: string | null
+          imageUrl?: string | null
         }
         error?: string
       } | null
@@ -1278,11 +1404,30 @@ export function App() {
       if (!isUpdating) {
         setEditingSubmissionId(data.submission.id)
         setRouteDraftLoadedId(data.submission.id)
-        navigate(`/submissions/${encodeURIComponent(data.submission.id)}/edit`)
       }
-      setSaveDraftMessage(
-        `Draft ${isUpdating ? 'updated' : 'saved'} successfully. Status: ${data.submission.status}. ID: ${data.submission.id}`,
+      // Server receipt IDs tell us whether the saved audit matched the live brand config.
+      const serverHasFreshTextAudit = Boolean(
+        hasFreshTextAudit && data.submission.textAuditReceiptId === auditResult?.auditReceiptId,
       )
+      const imageIsAttached = Boolean(imageAuditResult?.asset?.secureUrl || data.submission.imageUrl)
+      const serverHasFreshImageAudit = !imageIsAttached || Boolean(
+        hasFreshImageAudit && data.submission.imageAuditReceiptId === imageAuditResult?.auditReceiptId,
+      )
+      const auditsNeedRefresh = !serverHasFreshTextAudit || !serverHasFreshImageAudit
+      setSavedSubmissionsNudge(true)
+      const saveToastMessage = auditsNeedRefresh
+        ? `Draft ${isUpdating ? 'updated' : 'saved'}, but an audit needs refreshing. Open Saved Submissions to continue.`
+        : isUpdating
+          ? 'Draft updated. Open Saved Submissions to continue or submit it for review.'
+          : 'Draft saved. Open Saved Submissions to submit it for review.'
+      window.sessionStorage.setItem('brandflight_pending_save_toast', saveToastMessage)
+      const targetEditPath = `/submissions/${encodeURIComponent(data.submission.id)}/edit`
+      if (location.pathname === targetEditPath) {
+        window.sessionStorage.removeItem('brandflight_pending_save_toast')
+        setSaveDraftMessage(saveToastMessage)
+      } else {
+        navigate(targetEditPath)
+      }
     } catch (error) {
       setSaveDraftError(
         error instanceof Error ? error.message : 'Unable to save this draft.',
@@ -1315,6 +1460,8 @@ export function App() {
       title: submission.title.trim(),
       content: submission.contentText,
       findings: restoredFindings,
+      textAuditReceiptId: submission.textAuditReceiptId ?? null,
+      imageAuditReceiptId: submission.imageAuditReceiptId ?? null,
       imageName: submission.imageName ?? null,
       imageAltText: submission.imageAltText ?? null,
       imageAudit: imageAuditSnapshot(submission.imageAuditData),
@@ -1332,7 +1479,15 @@ export function App() {
     setAuditedImageAltText(
       submission.imageAuditData ? (submission.imageAltText ?? '') : null,
     )
-    setImageAuditResult(submission.imageAuditData ?? null)
+    setImageAuditResult(submission.imageAuditData
+      ? {
+          ...submission.imageAuditData,
+          auditReceiptId: submission.imageAuditReceiptId ?? undefined,
+          asset: submission.imageUrl && submission.imagePublicId
+            ? { secureUrl: submission.imageUrl, publicId: submission.imagePublicId }
+            : submission.imageAuditData.asset,
+        }
+      : null)
         setImagePreviewUrl(
           submission.imageUrl ?? submission.imageAuditData?.asset?.secureUrl ?? null,
         )
@@ -1344,6 +1499,7 @@ export function App() {
       totalFindings: restoredFindings.length,
       findings: restoredFindings,
       semanticStatus: 'unavailable',
+      auditReceiptId: submission.textAuditReceiptId ?? undefined,
     })
     setAuditedContent(submission.contentText)
     setAuditRestoredFromSubmission(true)
@@ -1400,15 +1556,68 @@ export function App() {
       {/* 1. Redesigned B2B SaaS Header */}
       <header className="bf-header">
         <div className="bf-header-container">
-          <div className="bf-header-left">
-            <div className="bf-brand-lockup" aria-label="BrandFlight Content Preflight">
-              <span className="bf-logo-mark">
-                <BrandFlightMark />
+          <div className="bf-header-topline">
+            <div className="bf-header-left">
+              <div className="bf-brand-lockup" aria-label="BrandFlight Content Preflight">
+                <span className="bf-logo-mark">
+                  <BrandFlightMark />
+                </span>
+                <span className="bf-brand-copy">
+                  <span className="bf-wordmark">BrandFlight</span>
+                  <span className="bf-product-Descriptor">Content Preflight</span>
+                </span>
+              </div>
+            </div>
+
+            <div className="bf-header-right">
+              <span className="bf-brand-context">
+                Brand: <strong>{brandProfile?.name ?? auditResult?.brand.name ?? SEEDED_BRAND_PROFILE.name}</strong>
               </span>
-              <span className="bf-brand-copy">
-                <span className="bf-wordmark">BrandFlight</span>
-                <span className="bf-product-Descriptor">Content Preflight</span>
+              <span className="bf-header-divider" aria-hidden="true" />
+              <span className="bf-api-indicator" title={`Endpoint: ${API_BASE_URL}/api/audit`}>
+                <span className={`bf-status-dot ${apiHealth}`} />
+                {apiHealth === 'online'
+                  ? 'API Connected'
+                  : apiHealth === 'offline'
+                    ? 'API Offline'
+                    : 'Checking API...'}
               </span>
+              <span className="bf-header-divider" aria-hidden="true" />
+              <div className="bf-auth-user">
+                <span className="bf-auth-user-name">
+                  {authSession.user.name}
+                </span>
+                <span className="bf-auth-user-role">
+                  {authSession.user.role}
+                </span>
+              </div>
+
+              {DEMO_ACCESS_ENABLED && (
+                <label className="bf-demo-role-switcher">
+                  <span>Demo role</span>
+                  <select
+                    aria-label="Switch demo role"
+                    value={authSession.user.role}
+                    disabled={demoLoginBusyRole !== null}
+                    onChange={(event) => void handleDemoLogin(event.target.value as AuthRole)}
+                  >
+                    <option value="CREATOR">Creator</option>
+                    <option value="REVIEWER">Reviewer</option>
+                    <option value="MANAGER">Manager</option>
+                  </select>
+                </label>
+              )}
+              {demoLoginError && DEMO_ACCESS_ENABLED && (
+                <span className="bf-demo-switch-error" role="alert">{demoLoginError}</span>
+              )}
+
+              <button
+                type="button"
+                className="bf-nav-link bf-header-signout"
+                onClick={handleLogout}
+              >
+                Sign out
+              </button>
             </div>
           </div>
 
@@ -1431,10 +1640,13 @@ export function App() {
                 </button>
                 <button
                   type="button"
-                  className={`bf-nav-link ${activeView === 'submissions' ? 'active' : ''}`}
-                  onClick={() => setActiveView('submissions')}
+                  className={`bf-nav-link ${activeView === 'submissions' ? 'active' : ''} ${savedSubmissionsNudge && activeView !== 'submissions' ? 'bf-nav-link-next' : ''}`}
+                  onClick={() => { setActiveView('submissions'); setSavedSubmissionsNudge(false) }}
                 >
-                  Saved Submissions
+                  <span>Saved Submissions</span>
+                  {savedSubmissionsNudge && activeView !== 'submissions' && (
+                    <span className="bf-nav-next-badge">NEXT</span>
+                  )}
                 </button>
               </>
             )}
@@ -1474,39 +1686,14 @@ export function App() {
                 </button>
               </>
             )}
-          </nav>
-
-          <div className="bf-header-right">
-            <span className="bf-brand-context">
-              Brand: <strong>{brandProfile?.name ?? auditResult?.brand.name ?? SEEDED_BRAND_PROFILE.name}</strong>
-            </span>
-            <span className="bf-header-divider" aria-hidden="true" />
-            <span className="bf-api-indicator" title={`Endpoint: ${API_BASE_URL}/api/audit`}>
-              <span className={`bf-status-dot ${apiHealth}`} />
-              {apiHealth === 'online'
-                ? 'API Connected'
-                : apiHealth === 'offline'
-                  ? 'API Offline'
-                  : 'Checking API...'}
-            </span>
-            <span className="bf-header-divider" aria-hidden="true" />
-            <div className="bf-auth-user">
-              <span className="bf-auth-user-name">
-                {authSession.user.name}
-              </span>
-              <span className="bf-auth-user-role">
-                {authSession.user.role}
-              </span>
-            </div>
-
             <button
               type="button"
-              className="bf-nav-link"
-              onClick={handleLogout}
+              className={`bf-nav-link ${activeView === 'approved' ? 'active' : ''}`}
+              onClick={() => setActiveView('approved')}
             >
-              Sign out
+              Approved Campaigns
             </button>
-          </div>
+          </nav>
         </div>
       </header>
 
@@ -1766,11 +1953,7 @@ export function App() {
                       </p>
                     )}
 
-                    {saveDraftMessage && (
-                      <p className="bf-save-feedback success" role="status">
-                        {saveDraftMessage}
-                      </p>
-                    )}
+
                   </div>
                 </form>
                 )}
@@ -1904,14 +2087,12 @@ export function App() {
                       </button>
                     </div>
                     <p className="bf-section-meta bf-image-save-help">
-                      Saving checks that the current copy has a current Preflight Audit and that any newly selected image has a matching image audit.
+                      Save work in progress at any time. Run fresh Preflight and Image Audits before submitting for review. A newly selected image must be uploaded through Image Audit before it can be attached.
                     </p>
                     {saveDraftError && (
                       <p className="bf-save-feedback error" role="alert">{saveDraftError}</p>
                     )}
-                    {saveDraftMessage && (
-                      <p className="bf-save-feedback success" role="status">{saveDraftMessage}</p>
-                    )}
+
 
                     {!isImageAuditing && !imageAuditError && !imageAuditResult && (
                       <div className="bf-audit-empty-banner" role="status">
@@ -1955,34 +2136,113 @@ export function App() {
                         >
                           <div className="bf-banner-body">
                             <div className="bf-banner-heading">
-                              {imageAuditResult.totalFindings === 0
-                                ? 'No image or alt-text issues detected'
-                                : `${imageAuditResult.totalFindings} image finding(s)`}
+                              {!imageAuditResult.image.colorAnalysis
+                                ? 'Saved image audit restored — re-run to compare each dominant color'
+                                : imageAuditResult.totalFindings === 0
+                                  ? 'Image checks completed — no configured issues found'
+                                  : `Review ${imageAuditResult.totalFindings} image finding(s)`}
                             </div>
                             <div>
                               {imageAuditResult.image.name}
                               {imageAuditResult.image.width && imageAuditResult.image.height
                                 ? ` · ${imageAuditResult.image.width} × ${imageAuditResult.image.height}px`
                                 : ''}
-                              {' · '}
-                              Alt text: {imageAuditResult.image.altTextLength} characters
+                              {' · '}Alt text: {imageAuditResult.image.altTextLength} characters
                             </div>
                           </div>
                         </div>
 
-                        <div className="bf-field">
-                          <span className="bf-label">Extracted dominant colors</span>
-                          <div className="bf-swatch-list" style={{ marginTop: '8px' }}>
-                            {imageAuditResult.image.dominantColors.map((color) => (
-                              <div className="bf-swatch-item" key={color}>
-                                <span
-                                  className="bf-swatch-color"
-                                  style={{ backgroundColor: color }}
-                                />
-                                <code>{color}</code>
-                              </div>
-                            ))}
+                        <div className="bf-image-audit-metrics" aria-label="Image audit summary">
+                          <div className="bf-image-audit-metric">
+                            <span>Palette check</span>
+                            <strong className={imageAuditResult.image.approvedColors.length === 0 ? 'needs-review' : imageAuditResult.image.colorAnalysis?.some((item) => !item.matchesPalette) ? 'needs-review' : imageAuditResult.image.colorAnalysis ? 'passed' : 'needs-review'}>
+                              {imageAuditResult.image.approvedColors.length === 0
+                                ? 'Not configured'
+                                : !imageAuditResult.image.colorAnalysis
+                                  ? 'Re-audit needed'
+                                  : imageAuditResult.image.colorAnalysis.some((item) => !item.matchesPalette)
+                                    ? 'Review colors'
+                                    : 'Within tolerance'}
+                            </strong>
+                            <small>
+                              {imageAuditResult.image.colorAnalysis
+                                ? `${imageAuditResult.image.colorAnalysis.filter((item) => item.matchesPalette).length} of ${imageAuditResult.image.colorAnalysis.length} dominant colors matched`
+                                : 'Per-color results require a fresh audit'}
+                            </small>
                           </div>
+                          <div className="bf-image-audit-metric">
+                            <span>Alt-text check</span>
+                            <strong className={imageAuditResult.findings.some((finding) => finding.category === 'ACCESSIBILITY') ? 'needs-review' : 'passed'}>
+                              {imageAuditResult.findings.some((finding) => finding.category === 'ACCESSIBILITY') ? 'Needs review' : 'Basic checks passed'}
+                            </strong>
+                            <small>Presence, configured length, and generic-label checks; review meaning in context.</small>
+                          </div>
+                          <div className="bf-image-audit-metric">
+                            <span>Findings</span>
+                            <strong className={imageAuditResult.totalFindings > 0 ? 'needs-review' : 'passed'}>{imageAuditResult.totalFindings}</strong>
+                            <small>Rule-based checks only; not a full WCAG or image-understanding audit</small>
+                          </div>
+                        </div>
+
+                        {imageAuditResult.logoVerification && (
+                          <section className={`bf-logo-verification-card outcome-${imageAuditResult.logoVerification.outcome.toLowerCase()}`} aria-label="Brand logo verification">
+                            <div className="bf-logo-verification-heading">
+                              <div><span className="bf-logo-verification-eyebrow">OFFICIAL BRAND ASSET</span><h3>Logo verification</h3></div>
+                              <span className={`bf-logo-verification-badge outcome-${imageAuditResult.logoVerification.outcome.toLowerCase()}`}>
+                                {imageAuditResult.logoVerification.outcome === 'NOT_CONFIGURED' ? 'Not configured' : imageAuditResult.logoVerification.outcome.replace(/_/g, ' ')}
+                              </span>
+                            </div>
+                            {imageAuditResult.logoVerification.referenceLogo && (
+                              <div className="bf-logo-reference-row">
+                                <img src={imageAuditResult.logoVerification.referenceLogo.secureUrl} alt={`Approved reference: ${imageAuditResult.logoVerification.referenceLogo.name}`} />
+                                <div><strong>{imageAuditResult.logoVerification.referenceLogo.name}</strong><p>{imageAuditResult.logoVerification.referenceLogo.expectedWordmark ? `Expected wordmark: ${imageAuditResult.logoVerification.referenceLogo.expectedWordmark}` : 'No expected wordmark configured'}</p><small>{imageAuditResult.logoVerification.required ? 'Logo required' : 'Logo optional'} · {imageAuditResult.logoVerification.confidence.toLowerCase()} confidence</small></div>
+                              </div>
+                            )}
+                            <p className="bf-logo-verification-summary">{imageAuditResult.logoVerification.summary}</p>
+                            <div className="bf-logo-check-grid">
+                              <span><small>Logo detected</small><strong>{imageAuditResult.logoVerification.outcome === 'NOT_CONFIGURED' ? 'Not checked' : imageAuditResult.logoVerification.outcome === 'NEEDS_REVIEW' ? 'Needs review' : imageAuditResult.logoVerification.logoDetected ? 'Yes' : 'No'}</strong></span>
+                              <span><small>Wordmark</small><strong>{imageAuditResult.logoVerification.wordmarkStatus.replace(/_/g, ' ')}</strong></span>
+                              <span><small>Logo colors</small><strong>{imageAuditResult.logoVerification.colorStatus.replace(/_/g, ' ')}</strong></span>
+                              <span><small>Integrity</small><strong>{imageAuditResult.logoVerification.integrityStatus.replace(/_/g, ' ')}</strong></span>
+                            </div>
+                            {imageAuditResult.logoVerification.evidence.length > 0 && <ul className="bf-logo-verification-list">{imageAuditResult.logoVerification.evidence.map((item, index) => <li key={`logo-evidence-${index}`}>{item}</li>)}</ul>}
+                            {imageAuditResult.logoVerification.suggestions.length > 0 && <ul className="bf-logo-verification-list suggestions">{imageAuditResult.logoVerification.suggestions.map((item, index) => <li key={`logo-suggestion-${index}`}>{item}</li>)}</ul>}
+                          </section>
+                        )}
+
+                        <div className="bf-field">
+                          <span className="bf-label">Dominant colors compared with the approved palette</span>
+                          <p className="bf-image-audit-help">The five most common extracted colors are compared with the nearest approved brand color. A match means RGB distance is within the current tolerance; it does not prove overall brand compliance.</p>
+                          {imageAuditResult.image.colorAnalysis ? (
+                            <div className="bf-color-audit-list">
+                              {imageAuditResult.image.colorAnalysis.map((item) => (
+                                <div className={`bf-color-audit-item ${!item.nearestApprovedColor ? 'is-no-palette' : item.matchesPalette ? 'is-match' : 'is-off-palette'}`} key={item.color}>
+                                  <span className="bf-swatch-color" style={{ backgroundColor: item.color }} />
+                                  <div className="bf-color-audit-copy">
+                                    <strong>{item.color}</strong>
+                                    <span>{!item.nearestApprovedColor ? 'No approved palette configured' : item.matchesPalette ? 'Within palette tolerance' : 'Outside palette tolerance'}</span>
+                                  </div>
+                                  <div className="bf-color-audit-nearest">
+                                    <small>Nearest approved</small>
+                                    <strong>{item.nearestApprovedColor ?? 'No palette'}</strong>
+                                    {item.distance !== null && <small>RGB distance: {item.distance}</small>}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="bf-image-audit-legacy-note" role="status">
+                              This is a previously saved audit without per-color comparison results. Run Image Audit again to evaluate each dominant color.
+                              <div className="bf-swatch-list" style={{ marginTop: '8px' }}>
+                                {imageAuditResult.image.dominantColors.map((color) => (
+                                  <div className="bf-swatch-item" key={color}>
+                                    <span className="bf-swatch-color" style={{ backgroundColor: color }} />
+                                    <code>{color}</code>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
 
                         <div className="bf-field">
@@ -2369,7 +2629,6 @@ export function App() {
             apiBaseUrl={API_BASE_URL}
             brandProfileId={BRAND_PROFILE_ID}
             onBrandLoaded={setBrandProfile}
-            onBack={() => setActiveView('workspace')}
           />
         ) : activeView === 'manager' && authSession.user.role === 'MANAGER' ? (
           <ManagerDashboard
@@ -2386,6 +2645,11 @@ export function App() {
             onOpenDraft={handleOpenSavedDraft}
             onNewDraft={handleStartNewDraft}
           />
+        ) : activeView === 'approved' ? (
+          <ApprovedCampaignsPanel
+            apiBaseUrl={API_BASE_URL}
+            token={authSession.token}
+          />
         ) : (
           <ReviewQueuePanel
             apiBaseUrl={API_BASE_URL}
@@ -2395,6 +2659,16 @@ export function App() {
           />
         )}
       </main>
+      {saveDraftMessage && (
+        <div className="bf-toast bf-toast-success" role="status" aria-live="polite">
+          <span className="bf-toast-icon" aria-hidden="true">✓</span>
+          <div className="bf-toast-copy">
+            <strong>{saveDraftMessage.startsWith('This draft is already saved') ? 'Already saved' : saveDraftMessage.startsWith('Draft updated') ? 'Draft updated' : 'Draft saved'}</strong>
+            <p>{saveDraftMessage}</p>
+          </div>
+          <button type="button" className="bf-toast-dismiss" aria-label="Dismiss notification" onClick={() => setSaveDraftMessage(null)}>×</button>
+        </div>
+      )}
       {overrideTarget && (
         <div className="bf-override-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget && !overrideBusy) setOverrideTarget(null) }}>
           <section className="bf-override-dialog" role="dialog" aria-modal="true" aria-labelledby="bf-override-title">

@@ -1,6 +1,7 @@
 import { Router, type Response } from "express";
 import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
+import { auditConfigHash, imageAuditInputHash, sha256Text } from "../lib/audit-receipts.js";
 import {
   requireAuth,
   requireRoles,
@@ -261,7 +262,15 @@ async function loadAccessibleSubmission(
     return null;
   }
 
-  if (user.role === "CREATOR" && submission.creatorId !== user.id) {
+  // Approved campaigns are shared workspace artifacts: every authenticated role may
+  // inspect them and participate in their persistent discussion thread.
+  if (submission.status === "APPROVED") {
+    return submission;
+  }
+
+  if (
+    user.role === "CREATOR" && submission.creatorId !== user.id
+  ) {
     res.status(403).json({
       error: "Creators can only access their own submissions.",
     });
@@ -296,6 +305,121 @@ function handleError(res: Response, error: unknown, message: string) {
   return res.status(500).json({ error: message });
 }
 
+async function loadAuditBrand(brandProfileId: string) {
+  return prisma.brandProfile.findUnique({
+    where: { id: brandProfileId },
+    include: {
+      rules: { where: { isActive: true } },
+      facts: { where: { isActive: true } },
+      assets: { where: { assetType: "PRIMARY_LOGO" }, take: 1 },
+    },
+  });
+}
+
+type AuditBrand = NonNullable<Awaited<ReturnType<typeof loadAuditBrand>>>;
+type AuditReceiptRecord = {
+  id: string;
+  kind: string;
+  userId: string;
+  brandProfileId: string;
+  inputHash: string;
+  configHash: string;
+  result: unknown;
+};
+
+function receiptMatches(
+  receipt: AuditReceiptRecord | null,
+  expected: {
+    kind: "TEXT" | "IMAGE";
+    userId: string;
+    brandProfileId: string;
+    inputHash: string;
+    configHash: string;
+  },
+): receipt is AuditReceiptRecord {
+  return Boolean(
+    receipt &&
+    receipt.kind === expected.kind &&
+    receipt.userId === expected.userId &&
+    receipt.brandProfileId === expected.brandProfileId &&
+    receipt.inputHash === expected.inputHash &&
+    receipt.configHash === expected.configHash,
+  );
+}
+
+async function validateTextAuditReceipt(
+  receiptId: unknown,
+  userId: string,
+  brandProfileId: string,
+  contentText: string,
+  brand: AuditBrand,
+) {
+  if (!nonEmptyString(receiptId)) return null;
+  const receipt = await prisma.auditReceipt.findUnique({ where: { id: receiptId } });
+  const structuralReceipt = receipt as AuditReceiptRecord | null;
+  if (!receiptMatches(structuralReceipt, {
+    kind: "TEXT",
+    userId,
+    brandProfileId,
+    inputHash: sha256Text(contentText),
+    configHash: auditConfigHash(brand, "TEXT"),
+  })) return null;
+
+  const validReceipt = structuralReceipt;
+  if (!validReceipt || !isRecord(validReceipt.result)) return null;
+  const findings = parseFindings(validReceipt.result.findings);
+  if (!findings) return null;
+
+  return {
+    receiptId: validReceipt.id,
+    findings,
+    semanticStatus: validReceipt.result.semanticStatus === "completed" ? "completed" : "unavailable",
+  };
+}
+
+async function validateImageAuditReceipt(
+  receiptId: unknown,
+  userId: string,
+  brandProfileId: string,
+  imageUrl: string,
+  imagePublicId: string,
+  imageAltText: string | null,
+  brand: AuditBrand,
+) {
+  if (!nonEmptyString(receiptId)) return null;
+  const receipt = await prisma.auditReceipt.findUnique({ where: { id: receiptId } });
+  const structuralReceipt = receipt as AuditReceiptRecord | null;
+  const inputHash = imageAuditInputHash(
+    { secureUrl: imageUrl, publicId: imagePublicId },
+    imageAltText ?? "",
+  );
+  if (!receiptMatches(structuralReceipt, {
+    kind: "IMAGE",
+    userId,
+    brandProfileId,
+    inputHash,
+    configHash: auditConfigHash(brand, "IMAGE"),
+  })) return null;
+
+  const validReceipt = structuralReceipt;
+  if (!validReceipt) return null;
+  const parsed = parseImageAuditData(validReceipt.result);
+  if (!parsed.valid || !parsed.present || !parsed.value || !isRecord(validReceipt.result)) return null;
+  const asset = isRecord(validReceipt.result.asset) ? validReceipt.result.asset : null;
+  const image = isRecord(validReceipt.result.image) ? validReceipt.result.image : null;
+  if (
+    !asset || asset.secureUrl !== imageUrl || asset.publicId !== imagePublicId ||
+    !image || !nonEmptyString(image.name)
+  ) return null;
+
+  return {
+    receiptId: validReceipt.id,
+    value: parsed.value,
+    result: validReceipt.result,
+    imageName: image.name,
+  };
+}
+
 // A creator sees their own submissions. Reviewers see their review queue.
 // Managers can inspect all submissions.
 submissionsRouter.get("/", requireAuth, async (req, res) => {
@@ -303,16 +427,18 @@ submissionsRouter.get("/", requireAuth, async (req, res) => {
 
   try {
     const where =
-      user.role === "CREATOR"
-        ? { creatorId: user.id }
-        : user.role === "REVIEWER"
-          ? {
-              OR: [
-                { status: "IN_REVIEW" as const },
-                { reviewerId: user.id },
-              ],
-            }
-          : {};
+      req.query.scope === "approved"
+        ? { status: "APPROVED" as const }
+        : user.role === "CREATOR"
+          ? { creatorId: user.id }
+          : user.role === "REVIEWER"
+            ? {
+                OR: [
+                  { status: "IN_REVIEW" as const },
+                  { reviewerId: user.id },
+                ],
+              }
+            : {};
 
     const submissions = await prisma.submission.findMany({
       where,
@@ -339,7 +465,7 @@ submissionsRouter.get("/", requireAuth, async (req, res) => {
   }
 });
 
-// Create a draft, initial revision, and optional audit findings.
+// Create a draft only from server-generated audit receipts.
 submissionsRouter.post(
   "/",
   requireAuth,
@@ -351,11 +477,11 @@ submissionsRouter.post(
     }
 
     const { title, contentText, brandProfileId } = body;
-    const findings = parseFindings(body.findings);
     const tags = parseSubmissionTags(body.tags);
-    const imageAudit = parseImageAuditData(body.imageAuditData);
-    const imageName = body.imageName;
-    const imageAltText = body.imageAltText;
+    const textAuditReceiptId = body.textAuditReceiptId;
+    const imageAuditReceiptId = body.imageAuditReceiptId;
+    const imageNameInput = body.imageName;
+    const imageAltTextInput = body.imageAltText;
     const hasCloudinaryAsset =
       Object.prototype.hasOwnProperty.call(body, "imageUrl") ||
       Object.prototype.hasOwnProperty.call(body, "imagePublicId");
@@ -372,28 +498,74 @@ submissionsRouter.post(
       !contentText.trim() ||
       contentText.length > 20000 ||
       !nonEmptyString(brandProfileId) ||
-      findings === null ||
       tags === null ||
-      !imageAudit.valid ||
       !imageAsset.valid ||
-      (imageName !== undefined && imageName !== null &&
-        (typeof imageName !== "string" || imageName.length > 255)) ||
-      (imageAltText !== undefined && imageAltText !== null &&
-        (typeof imageAltText !== "string" || imageAltText.length > 1000))
+      (imageNameInput !== undefined && imageNameInput !== null &&
+        (typeof imageNameInput !== "string" || imageNameInput.length > 255)) ||
+      (imageAltTextInput !== undefined && imageAltTextInput !== null &&
+        (typeof imageAltTextInput !== "string" || imageAltTextInput.length > 1000))
     ) {
       return res.status(400).json({
-        error: "Provide a title (up to 160 characters), content (up to 20,000 characters), brandProfileId, and at most 20 valid findings.",
+        error: "Provide a valid draft title, campaign copy, brandProfileId, and valid optional image details.",
       });
     }
 
     try {
-      const brand = await prisma.brandProfile.findUnique({
-        where: { id: brandProfileId },
-        select: { id: true },
-      });
-
+      const brand = await loadAuditBrand(brandProfileId);
       if (!brand) {
         return res.status(404).json({ error: "Brand profile not found." });
+      }
+
+      // Drafts may be saved while content is in progress. Only trust audit findings
+      // when a server-issued receipt matches the exact content and current brand rules.
+      const textAudit = await validateTextAuditReceipt(
+        textAuditReceiptId,
+        req.authUser!.id,
+        brand.id,
+        contentText,
+        brand,
+      );
+
+      const hasImage = Boolean(imageAsset.imageUrl && imageAsset.publicId);
+      let imageAuditData: Prisma.InputJsonValue | null = null;
+      let storedImageName: string | null = null;
+      let storedImageAltText: string | null = null;
+      let storedImageUrl: string | null = null;
+      let storedImagePublicId: string | null = null;
+      let storedImageReceiptId: string | null = null;
+
+      if (hasImage) {
+        const normalizedAltText = typeof imageAltTextInput === "string" ? imageAltTextInput.trim() : "";
+        // Keep the actual uploaded asset and creator-supplied metadata on the draft, even
+        // if its latest audit has gone stale. Never persist findings without a valid receipt.
+        storedImageName = typeof imageNameInput === "string" && imageNameInput.trim()
+          ? imageNameInput.trim()
+          : null;
+        storedImageAltText = normalizedAltText || null;
+        storedImageUrl = imageAsset.imageUrl!;
+        storedImagePublicId = imageAsset.publicId!;
+
+        const imageAudit = await validateImageAuditReceipt(
+          imageAuditReceiptId,
+          req.authUser!.id,
+          brand.id,
+          imageAsset.imageUrl!,
+          imageAsset.publicId!,
+          normalizedAltText || null,
+          brand,
+        );
+        if (imageAudit) {
+          const asset = isRecord(imageAudit.result.asset) ? imageAudit.result.asset : null;
+          if (asset) {
+            imageAuditData = imageAudit.value;
+            storedImageName = imageAudit.imageName;
+            storedImageUrl = asset.secureUrl as string;
+            storedImagePublicId = asset.publicId as string;
+            storedImageReceiptId = imageAudit.receiptId;
+          }
+        }
+      } else if (imageAuditReceiptId !== undefined && imageAuditReceiptId !== null) {
+        return res.status(400).json({ error: "An image audit receipt was supplied without a campaign image." });
       }
 
       const submission = await prisma.$transaction(async (tx) => {
@@ -402,17 +574,13 @@ submissionsRouter.post(
             title: title.trim(),
             tags: tags ?? [],
             contentText,
-            imageName: typeof imageName === "string" && imageName.trim()
-              ? imageName.trim()
-              : null,
-            imageAltText: typeof imageAltText === "string" && imageAltText.trim()
-              ? imageAltText.trim()
-              : null,
-            imageUrl: imageAsset.imageUrl,
-            imagePublicId: imageAsset.publicId,
-            ...(imageAudit.value
-              ? { imageAuditData: imageAudit.value }
-              : {}),
+            imageName: storedImageName,
+            imageAltText: storedImageAltText,
+            imageUrl: storedImageUrl,
+            imagePublicId: storedImagePublicId,
+            imageAuditData: imageAuditData ?? Prisma.DbNull,
+            textAuditReceiptId: textAudit?.receiptId ?? null,
+            imageAuditReceiptId: storedImageReceiptId,
             brandProfileId: brand.id,
             creatorId: req.authUser!.id,
           },
@@ -426,17 +594,15 @@ submissionsRouter.post(
             imageAltText: created.imageAltText,
             imageUrl: created.imageUrl,
             imagePublicId: created.imagePublicId,
-            ...(imageAudit.value
-              ? { imageAuditData: imageAudit.value }
-              : {}),
+            imageAuditData: imageAuditData ?? Prisma.DbNull,
             submissionId: created.id,
             authorId: req.authUser!.id,
           },
         });
 
-        if (findings.length > 0) {
+        if (textAudit && textAudit.findings.length > 0) {
           await tx.finding.createMany({
-            data: findings.map((finding) => ({
+            data: textAudit.findings.map((finding) => ({
               ...finding,
               submissionId: created.id,
             })),
@@ -448,9 +614,9 @@ submissionsRouter.post(
           include: submissionDetails,
         });
       }, {
-      maxWait: 10_000,
-      timeout: 20_000,
-    });
+        maxWait: 10_000,
+        timeout: 20_000,
+      });
 
       return res.status(201).json({ submission });
     } catch (error) {
@@ -475,15 +641,13 @@ submissionsRouter.get("/:id", requireAuth, async (req, res) => {
   }
 });
 
-// Creators can edit only their own draft or returned submission.
-// A changed content version is recorded in the revision history.
+// Creators can edit drafts/returned submissions. Audit findings and image results come from receipts.
 submissionsRouter.patch(
   "/:id",
   requireAuth,
   requireRoles("CREATOR"),
   async (req, res) => {
     const body: unknown = req.body;
-
     if (!isRecord(body)) {
       return res.status(400).json({ error: "A JSON object is required." });
     }
@@ -492,41 +656,30 @@ submissionsRouter.patch(
     const hasTags = Object.prototype.hasOwnProperty.call(body, "tags");
     const tags = hasTags ? parseSubmissionTags(body.tags) : undefined;
     const hasFindings = body.findings !== undefined;
-    const findings = hasFindings
-      ? parseFindings(body.findings)
-      : undefined;
+    const hasTextAuditReceipt = Object.prototype.hasOwnProperty.call(body, "textAuditReceiptId");
+    const hasImageAuditReceipt = Object.prototype.hasOwnProperty.call(body, "imageAuditReceiptId");
     const hasImageName = Object.prototype.hasOwnProperty.call(body, "imageName");
     const hasImageAltText = Object.prototype.hasOwnProperty.call(body, "imageAltText");
     const hasCloudinaryAsset =
       Object.prototype.hasOwnProperty.call(body, "imageUrl") ||
       Object.prototype.hasOwnProperty.call(body, "imagePublicId");
-    const imageAsset = parseCloudinaryAsset(
-      body.imageUrl,
-      body.imagePublicId,
-      hasCloudinaryAsset,
-    );
-    const imageAudit = parseImageAuditData(body.imageAuditData);
-    const imageName = body.imageName;
-    const imageAltText = body.imageAltText;
-    const hasImageFields =
-      hasImageName || hasImageAltText || imageAudit.present || imageAsset.present;
+    const imageAsset = parseCloudinaryAsset(body.imageUrl, body.imagePublicId, hasCloudinaryAsset);
+    const clientImageAudit = parseImageAuditData(body.imageAuditData);
+    const imageNameInput = body.imageName;
+    const imageAltTextInput = body.imageAltText;
+    const hasImageFields = hasImageName || hasImageAltText || clientImageAudit.present || imageAsset.present;
 
     if (
-      (title !== undefined &&
-        (!nonEmptyString(title) || title.trim().length > 160)) ||
-      (contentText !== undefined &&
-        (typeof contentText !== "string" ||
-          !contentText.trim() ||
-          contentText.length > 20000)) ||
-      (title === undefined && contentText === undefined && !hasFindings && !hasImageFields && !hasTags) ||
+      (title !== undefined && (!nonEmptyString(title) || title.trim().length > 160)) ||
+      (contentText !== undefined && (typeof contentText !== "string" || !contentText.trim() || contentText.length > 20000)) ||
+      (title === undefined && contentText === undefined && !hasFindings && !hasImageFields && !hasTags && !hasTextAuditReceipt && !hasImageAuditReceipt) ||
       (hasTags && tags === null) ||
-      (hasFindings && findings === null) ||
-      !imageAudit.valid ||
+      !clientImageAudit.valid ||
       !imageAsset.valid ||
-      (hasImageName && imageName !== null &&
-        (typeof imageName !== "string" || imageName.length > 255)) ||
-      (hasImageAltText && imageAltText !== null &&
-        (typeof imageAltText !== "string" || imageAltText.length > 1000))
+      (hasImageName && imageNameInput !== null && imageNameInput !== undefined &&
+        (typeof imageNameInput !== "string" || imageNameInput.length > 255)) ||
+      (hasImageAltText && imageAltTextInput !== null && imageAltTextInput !== undefined &&
+        (typeof imageAltTextInput !== "string" || imageAltTextInput.length > 1000))
     ) {
       return res.status(400).json({ error: "Invalid submission update." });
     }
@@ -535,54 +688,107 @@ submissionsRouter.patch(
       const current = await prisma.submission.findUnique({
         where: { id: getRouteParam(req.params.id) },
       });
-
-      if (!current) {
-        return res.status(404).json({ error: "Submission not found." });
-      }
-
+      if (!current) return res.status(404).json({ error: "Submission not found." });
       if (current.creatorId !== req.authUser!.id) {
         return res.status(403).json({ error: "You do not own this submission." });
       }
-
-      if (
-        current.status !== "DRAFT" &&
-        current.status !== "CHANGES_REQUESTED"
-      ) {
-        return res.status(409).json({
-          error: "Only drafts or submissions returned for changes can be edited.",
-        });
+      if (current.status !== "DRAFT" && current.status !== "CHANGES_REQUESTED") {
+        return res.status(409).json({ error: "Only drafts or submissions returned for changes can be edited." });
       }
 
-      const nextContent =
-        typeof contentText === "string" ? contentText : current.contentText;
+      const nextContent = typeof contentText === "string" ? contentText : current.contentText;
       const contentChanged = nextContent !== current.contentText;
-
-      const nextImageName = hasImageName
-        ? (typeof imageName === "string" && imageName.trim() ? imageName.trim() : null)
+      const nextImageNameInput = hasImageName
+        ? (typeof imageNameInput === "string" && imageNameInput.trim() ? imageNameInput.trim() : null)
         : current.imageName;
       const nextImageAltText = hasImageAltText
-        ? (typeof imageAltText === "string" && imageAltText.trim()
-            ? imageAltText.trim()
-            : null)
+        ? (typeof imageAltTextInput === "string" && imageAltTextInput.trim() ? imageAltTextInput.trim() : null)
         : current.imageAltText;
-      const nextImageUrl = imageAsset.present
-        ? imageAsset.imageUrl
-        : current.imageUrl;
-      const nextImagePublicId = imageAsset.present
-        ? imageAsset.publicId
-        : current.imagePublicId;
-      const imageAuditChanged = imageAudit.present &&
-        JSON.stringify(current.imageAuditData ?? null) !==
-        JSON.stringify(imageAudit.value ?? null);
-      const nextImageAuditData = imageAudit.present
-        ? imageAudit.value ?? null
-        : current.imageAuditData;
+      const nextImageUrlInput = imageAsset.present ? imageAsset.imageUrl : current.imageUrl;
+      const nextImagePublicIdInput = imageAsset.present ? imageAsset.publicId : current.imagePublicId;
+
+      let nextTextAuditReceiptId = current.textAuditReceiptId;
+      let trustedFindings: PersistedFinding[] | undefined;
+      const needsTextReceipt = typeof contentText === "string" || hasFindings || hasTextAuditReceipt;
+      if (needsTextReceipt) {
+        const brand = await loadAuditBrand(current.brandProfileId);
+        if (!brand) return res.status(404).json({ error: "Brand profile not found." });
+        const selectedReceiptId = hasTextAuditReceipt ? body.textAuditReceiptId : current.textAuditReceiptId;
+        const audit = await validateTextAuditReceipt(
+          selectedReceiptId,
+          req.authUser!.id,
+          current.brandProfileId,
+          nextContent,
+          brand,
+        );
+        if (!audit) {
+          // Keep the creator's work; clear stale receipt/findings so they cannot be
+          // mistaken for an audit of this version. Submission remains blocked until re-audit.
+          nextTextAuditReceiptId = null;
+          trustedFindings = [];
+        } else {
+          nextTextAuditReceiptId = audit.receiptId;
+          trustedFindings = audit.findings;
+        }
+      }
+
+      let nextImageUrl = nextImageUrlInput;
+      let nextImagePublicId = nextImagePublicIdInput;
+      let nextImageName = nextImageNameInput;
+      let nextImageAuditData: Prisma.InputJsonValue | Prisma.JsonValue | null = current.imageAuditData;
+      let nextImageAuditReceiptId = current.imageAuditReceiptId;
+      const needsImageReceipt = hasImageFields || hasImageAuditReceipt;
+
+      if (needsImageReceipt) {
+        const hasNextImage = Boolean(nextImageUrl && nextImagePublicId);
+        if (!hasNextImage) {
+          if (nextImageUrl || nextImagePublicId) {
+            return res.status(400).json({ error: "Image URL and public ID must be supplied together." });
+          }
+          nextImageUrl = null;
+          nextImagePublicId = null;
+          nextImageName = null;
+          nextImageAuditData = null;
+          nextImageAuditReceiptId = null;
+        } else {
+          const brand = await loadAuditBrand(current.brandProfileId);
+          if (!brand) return res.status(404).json({ error: "Brand profile not found." });
+          const selectedImageReceiptId = hasImageAuditReceipt ? body.imageAuditReceiptId : current.imageAuditReceiptId;
+          const audit = await validateImageAuditReceipt(
+            selectedImageReceiptId,
+            req.authUser!.id,
+            current.brandProfileId,
+            nextImageUrl!,
+            nextImagePublicId!,
+            nextImageAltText,
+            brand,
+          );
+          if (!audit) {
+            // Preserve the cloud-hosted image and alt text, but discard stale audit output.
+            nextImageAuditData = null;
+            nextImageAuditReceiptId = null;
+          } else {
+            const asset = isRecord(audit.result.asset) ? audit.result.asset : null;
+            if (!asset) {
+              nextImageAuditData = null;
+              nextImageAuditReceiptId = null;
+            } else {
+              nextImageUrl = asset.secureUrl as string;
+              nextImagePublicId = asset.publicId as string;
+              nextImageName = audit.imageName;
+              nextImageAuditData = audit.value;
+              nextImageAuditReceiptId = audit.receiptId;
+            }
+          }
+        }
+      }
+
       const imageChanged =
         nextImageName !== current.imageName ||
         nextImageAltText !== current.imageAltText ||
         nextImageUrl !== current.imageUrl ||
         nextImagePublicId !== current.imagePublicId ||
-        imageAuditChanged;
+        JSON.stringify(nextImageAuditData ?? null) !== JSON.stringify(current.imageAuditData ?? null);
       const snapshotChanged = contentChanged || imageChanged;
 
       const updated = await prisma.$transaction(async (tx) => {
@@ -592,21 +798,13 @@ submissionsRouter.patch(
             ...(typeof title === "string" ? { title: title.trim() } : {}),
             ...(hasTags ? { tags: tags! } : {}),
             ...(typeof contentText === "string" ? { contentText } : {}),
-            ...(hasImageName ? { imageName: nextImageName } : {}),
-            ...(hasImageAltText ? { imageAltText: nextImageAltText } : {}),
-            ...(imageAsset.present
-              ? {
-                  imageUrl: nextImageUrl,
-                  imagePublicId: nextImagePublicId,
-                }
-              : {}),
-            ...(imageAudit.present
-              ? {
-                  imageAuditData: imageAudit.value === null
-                    ? Prisma.DbNull
-                    : imageAudit.value!,
-                }
-              : {}),
+            imageName: nextImageName,
+            imageAltText: nextImageAltText,
+            imageUrl: nextImageUrl,
+            imagePublicId: nextImagePublicId,
+            imageAuditData: nextImageAuditData === null ? Prisma.DbNull : nextImageAuditData as Prisma.InputJsonValue,
+            textAuditReceiptId: nextTextAuditReceiptId,
+            imageAuditReceiptId: nextImageAuditReceiptId,
           },
         });
 
@@ -616,7 +814,6 @@ submissionsRouter.patch(
             orderBy: { version: "desc" },
             select: { version: true },
           });
-
           await tx.revision.create({
             data: {
               version: (latestRevision?.version ?? 0) + 1,
@@ -625,26 +822,18 @@ submissionsRouter.patch(
               imageAltText: nextImageAltText,
               imageUrl: nextImageUrl,
               imagePublicId: nextImagePublicId,
-              ...(nextImageAuditData
-                ? { imageAuditData: nextImageAuditData as Prisma.InputJsonValue }
-                : {}),
+              imageAuditData: nextImageAuditData === null ? Prisma.DbNull : nextImageAuditData as Prisma.InputJsonValue,
               submissionId: current.id,
               authorId: req.authUser!.id,
             },
           });
         }
 
-        if (findings !== undefined && findings !== null) {
-          await tx.finding.deleteMany({
-            where: { submissionId: current.id },
-          });
-
-          if (findings.length > 0) {
+        if (trustedFindings !== undefined) {
+          await tx.finding.deleteMany({ where: { submissionId: current.id } });
+          if (trustedFindings.length > 0) {
             await tx.finding.createMany({
-              data: findings.map((finding) => ({
-                ...finding,
-                submissionId: current.id,
-              })),
+              data: trustedFindings.map((finding) => ({ ...finding, submissionId: current.id })),
             });
           }
         }
@@ -653,10 +842,7 @@ submissionsRouter.patch(
           where: { id: result.id },
           include: submissionDetails,
         });
-      }, {
-        maxWait: 10_000,
-        timeout: 20_000,
-      });
+      }, { maxWait: 10_000, timeout: 20_000 });
 
       return res.json({ submission: updated });
     } catch (error) {
@@ -665,7 +851,7 @@ submissionsRouter.patch(
   },
 );
 
-// Creator submits a draft or a returned revision for review.
+// Submission is accepted only when its persisted audit receipts match current content, assets, and rules.
 submissionsRouter.post(
   "/:id/submit",
   requireAuth,
@@ -675,33 +861,83 @@ submissionsRouter.post(
       const current = await prisma.submission.findUnique({
         where: { id: getRouteParam(req.params.id) },
       });
-
-      if (!current) {
-        return res.status(404).json({ error: "Submission not found." });
-      }
-
+      if (!current) return res.status(404).json({ error: "Submission not found." });
       if (current.creatorId !== req.authUser!.id) {
         return res.status(403).json({ error: "You do not own this submission." });
       }
+      if (current.status !== "DRAFT" && current.status !== "CHANGES_REQUESTED") {
+        return res.status(409).json({ error: "Only drafts or returned submissions can be submitted for review." });
+      }
 
-      if (
-        current.status !== "DRAFT" &&
-        current.status !== "CHANGES_REQUESTED"
-      ) {
+      const brand = await loadAuditBrand(current.brandProfileId);
+      if (!brand) return res.status(404).json({ error: "Brand profile not found." });
+
+      const textAudit = await validateTextAuditReceipt(
+        current.textAuditReceiptId,
+        current.creatorId,
+        current.brandProfileId,
+        current.contentText,
+        brand,
+      );
+      if (!textAudit) {
         return res.status(409).json({
-          error: "Only drafts or returned submissions can be submitted for review.",
+          error: "Submission blocked: the text audit is missing or stale. Open the draft and run Preflight Audit again.",
+        });
+      }
+      if (textAudit.semanticStatus !== "completed") {
+        return res.status(409).json({
+          error: "Submission blocked: AI semantic review was unavailable during the last audit. Run Preflight Audit again when Gemini is available.",
         });
       }
 
-      const submission = await prisma.submission.update({
-        where: { id: current.id },
+      const hasImage = Boolean(current.imageUrl || current.imagePublicId);
+      if (hasImage) {
+        if (!current.imageUrl || !current.imagePublicId) {
+          return res.status(409).json({ error: "Submission blocked: the campaign image asset is incomplete. Run Image Audit again." });
+        }
+        const imageAudit = await validateImageAuditReceipt(
+          current.imageAuditReceiptId,
+          current.creatorId,
+          current.brandProfileId,
+          current.imageUrl,
+          current.imagePublicId,
+          current.imageAltText,
+          brand,
+        );
+        if (!imageAudit) {
+          return res.status(409).json({
+            error: "Submission blocked: the image audit is missing or stale. Re-run Image Audit for the current image and alt text.",
+          });
+        }
+      }
+
+      // Prevent a concurrent edit from slipping between receipt validation and status transition.
+      const changed = await prisma.submission.updateMany({
+        where: {
+          id: current.id,
+          creatorId: current.creatorId,
+          status: current.status,
+          brandProfileId: current.brandProfileId,
+          contentText: current.contentText,
+          textAuditReceiptId: current.textAuditReceiptId,
+          imageUrl: current.imageUrl,
+          imagePublicId: current.imagePublicId,
+          imageAltText: current.imageAltText,
+          imageAuditReceiptId: current.imageAuditReceiptId,
+        },
         data: { status: "IN_REVIEW" },
+      });
+      if (changed.count !== 1) {
+        return res.status(409).json({ error: "The campaign changed while its audits were being verified. Run the audits again and submit the latest version." });
+      }
+
+      const submission = await prisma.submission.findUnique({
+        where: { id: current.id },
         include: submissionDetails,
       });
-
       return res.json({ submission });
     } catch (error) {
-      return handleError(res, error, "Unable to submit for review.");
+      return handleError(res, error, "Unable to submit this campaign for review.");
     }
   },
 );

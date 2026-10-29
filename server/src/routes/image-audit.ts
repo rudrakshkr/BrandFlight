@@ -2,8 +2,11 @@ import { Router, type Request, type Response } from "express";
 import { v2 as cloudinary } from "cloudinary";
 import multer from "multer";
 import sharp from "sharp";
+import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth } from "../middleware/auth.js";
+import { auditConfigHash, createAuditReceiptId, imageAuditInputHash } from "../lib/audit-receipts.js";
+import { compareBrandLogo, type LogoVisualComparison } from "../lib/gemini.js";
+import { requireAuth, requireRoles } from "../middleware/auth.js";
 
 export const imageAuditRouter = Router();
 
@@ -11,6 +14,81 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_ALT_TEXT_LENGTH = 150;
 const MIN_ALT_TEXT_LENGTH = 10;
 const COLOR_DISTANCE_THRESHOLD = 75;
+
+const MAX_REFERENCE_LOGO_BYTES = 5 * 1024 * 1024;
+
+type ApprovedLogo = {
+  id: string;
+  name: string;
+  format: string;
+  secureUrl: string;
+  publicId: string;
+  expectedWordmark: string | null;
+  description: string | null;
+  isRequired: boolean;
+};
+
+async function downloadApprovedLogoReference(asset: ApprovedLogo): Promise<{ buffer: Buffer; mimeType: string }> {
+  const url = new URL(asset.secureUrl);
+  if (url.protocol !== "https:" || url.hostname !== "res.cloudinary.com" || !url.pathname.includes("/image/upload/")) {
+    throw new Error("The approved logo URL is not a trusted Cloudinary image URL.");
+  }
+  const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  if (!response.ok || !response.body) throw new Error("Unable to fetch the approved logo reference.");
+  const declaredLength = Number(response.headers.get("content-length") ?? 0);
+  if (declaredLength > MAX_REFERENCE_LOGO_BYTES) throw new Error("The approved logo reference exceeds 5 MB.");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.byteLength;
+      if (total > MAX_REFERENCE_LOGO_BYTES) {
+        await reader.cancel();
+        throw new Error("The approved logo reference exceeds 5 MB.");
+      }
+      chunks.push(value);
+    }
+  }
+  const mimeByFormat: Record<string, string> = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp" };
+  const mimeType = mimeByFormat[asset.format];
+  if (!mimeType) throw new Error("The approved logo format is unsupported for visual comparison.");
+  return { buffer: Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))), mimeType };
+}
+
+function notConfiguredLogoVerification() {
+  return {
+    outcome: "NOT_CONFIGURED" as const,
+    confidence: "LOW" as const,
+    logoDetected: false,
+    wordmarkStatus: "NOT_CONFIGURED" as const,
+    colorStatus: "NOT_CONFIGURED" as const,
+    integrityStatus: "NOT_CONFIGURED" as const,
+    summary: "No official logo reference is configured for this brand. Palette and alt-text checks can still run, but logo identity cannot be verified.",
+    evidence: [] as string[],
+    suggestions: ["A manager can upload the official primary logo in Brand Rulebook → Approved Brand Assets."],
+    required: false,
+    referenceLogo: null,
+  };
+}
+
+function failedLogoVerification(asset: ApprovedLogo, message: string) {
+  return {
+    outcome: "NEEDS_REVIEW" as const,
+    confidence: "LOW" as const,
+    logoDetected: false,
+    wordmarkStatus: "UNCLEAR" as const,
+    colorStatus: "UNCLEAR" as const,
+    integrityStatus: "UNCLEAR" as const,
+    summary: message,
+    evidence: [] as string[],
+    suggestions: ["Retry the image audit or have a reviewer compare the campaign with the approved logo manually."],
+    required: asset.isRequired,
+    referenceLogo: { id: asset.id, name: asset.name, secureUrl: asset.secureUrl, expectedWordmark: asset.expectedWordmark, isRequired: asset.isRequired },
+  };
+}
 
 async function uploadImageToCloudinary(buffer: Buffer) {
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
@@ -162,11 +240,16 @@ async function processImageAudit(req: Request, res: Response) {
       error: "Upload a PNG or JPEG image using the image field.",
     });
   }
+  if (altText.length > 1000) {
+    return res.status(400).json({ error: "Image alt text must be 1,000 characters or fewer." });
+  }
 
   const brand = await prisma.brandProfile.findUnique({
     where: { id: brandProfileId },
     include: {
       rules: { where: { isActive: true } },
+      facts: { where: { isActive: true } },
+      assets: { where: { assetType: "PRIMARY_LOGO" }, take: 1 },
     },
   });
 
@@ -197,7 +280,44 @@ async function processImageAudit(req: Request, res: Response) {
     brand.rules.find((rule) => rule.category === "ACCESSIBILITY")?.ruleCode ??
     "ACCESSIBILITY-01";
 
+  const palette = approvedColors
+    .map((color) => ({ color, rgb: hexToRgb(color) }))
+    .filter(
+      (item): item is { color: string; rgb: [number, number, number] } =>
+        item.rgb !== null,
+    );
+
+  // Report each dominant color's closest approved swatch. Previously, the image
+  // passed this check if ANY one dominant color matched, often just the white
+  // background of a logo/photo while its other colors were far from the palette.
+  const colorAnalysis = dominantColors.map((color) => {
+    const rgb = hexToRgb(color);
+    if (!rgb || palette.length === 0) {
+      return {
+        color,
+        nearestApprovedColor: null as string | null,
+        distance: null as number | null,
+        matchesPalette: false,
+      };
+    }
+
+    const nearest = palette
+      .map((approved) => ({
+        color: approved.color,
+        distance: colorDistance(rgb, approved.rgb),
+      }))
+      .sort((a, b) => a.distance - b.distance)[0];
+
+    return {
+      color,
+      nearestApprovedColor: nearest?.color ?? null,
+      distance: nearest ? Math.round(nearest.distance) : null,
+      matchesPalette: Boolean(nearest && nearest.distance <= COLOR_DISTANCE_THRESHOLD),
+    };
+  });
+
   const findings: ImageFinding[] = [];
+  const offPaletteColors = colorAnalysis.filter((item) => !item.matchesPalette);
 
   if (approvedColors.length === 0) {
     findings.push({
@@ -210,37 +330,17 @@ async function processImageAudit(req: Request, res: Response) {
       ruleCode: visualRuleCode,
       confidence: "Deterministic Match",
     });
-  } else {
-    const palette = approvedColors
-      .map((color) => ({ color, rgb: hexToRgb(color) }))
-      .filter(
-        (item): item is { color: string; rgb: [number, number, number] } =>
-          item.rgb !== null,
-      );
-
-    const matchesPalette = dominantColors.some((dominant) => {
-      const rgb = hexToRgb(dominant);
-      if (!rgb) return false;
-
-      return palette.some(
-        (approved) =>
-          colorDistance(rgb, approved.rgb) <= COLOR_DISTANCE_THRESHOLD,
-      );
+  } else if (offPaletteColors.length > 0) {
+    findings.push({
+      category: "VISUAL",
+      severity: "WARNING",
+      title: "Some dominant image colors differ from the brand palette",
+      message: `${offPaletteColors.length} of ${colorAnalysis.length} extracted dominant colors are outside the configured RGB-distance tolerance (≤ ${COLOR_DISTANCE_THRESHOLD}). This is a palette similarity signal, not a full visual or accessibility assessment.`,
+      evidence: offPaletteColors.map((item) => `${item.color} (nearest ${item.nearestApprovedColor ?? "no match"}, distance ${item.distance ?? "n/a"})`).join("; "),
+      suggestion: `Review the flagged colors. If they are intentional, consider whether the approved palette should include them; otherwise adjust the image toward: ${approvedColors.join(", ")}.`,
+      ruleCode: visualRuleCode,
+      confidence: "Deterministic Match",
     });
-
-    if (!matchesPalette) {
-      findings.push({
-        category: "VISUAL",
-        severity: "WARNING",
-        title: "Dominant image colors differ from the brand palette",
-        message:
-          "None of the five extracted dominant colors is sufficiently close to an approved brand color.",
-        evidence: dominantColors.join(", "),
-        suggestion: `Review the image palette or use approved colors: ${approvedColors.join(", ")}.`,
-        ruleCode: visualRuleCode,
-        confidence: "Deterministic Match",
-      });
-    }
   }
 
   if (!altText) {
@@ -276,11 +376,84 @@ async function processImageAudit(req: Request, res: Response) {
       ruleCode: accessibilityRuleCode,
       confidence: "Deterministic Match",
     });
+  } else if (/^(?:image|photo|picture|graphic|banner|logo|logo image|product image|image file|photo image|company logo|brand logo)$/i.test(altText.replace(/\s+/g, " ").trim())) {
+    findings.push({
+      category: "ACCESSIBILITY",
+      severity: "WARNING",
+      title: "Alt text is too generic",
+      message: "This label identifies the asset type but does not describe the meaningful content or purpose of the image.",
+      evidence: altText,
+      suggestion: "Describe what the image communicates. For a logo, identify the brand and any meaningful text shown in the image.",
+      ruleCode: accessibilityRuleCode,
+      confidence: "Deterministic Match",
+    });
+  }
+
+  const configuredLogo = (brand.assets?.[0] ?? null) as ApprovedLogo | null;
+  let logoVerification: ReturnType<typeof notConfiguredLogoVerification> | (LogoVisualComparison & {
+    required: boolean;
+    referenceLogo: { id: string; name: string; secureUrl: string; expectedWordmark: string | null; isRequired: boolean };
+  }) = notConfiguredLogoVerification();
+
+  if (configuredLogo) {
+    try {
+      const reference = await downloadApprovedLogoReference(configuredLogo);
+      const campaignMimeType = metadata.format === "jpeg" ? "image/jpeg" : metadata.format === "png" ? "image/png" : "image/webp";
+      const comparison = await compareBrandLogo(
+        req.file.buffer,
+        campaignMimeType,
+        reference.buffer,
+        reference.mimeType,
+        configuredLogo.expectedWordmark,
+        configuredLogo.description,
+      );
+      logoVerification = {
+        ...comparison,
+        required: configuredLogo.isRequired,
+        referenceLogo: {
+          id: configuredLogo.id,
+          name: configuredLogo.name,
+          secureUrl: configuredLogo.secureUrl,
+          expectedWordmark: configuredLogo.expectedWordmark,
+          isRequired: configuredLogo.isRequired,
+        },
+      };
+    } catch (logoError) {
+      const message = logoError instanceof Error
+        ? `Logo comparison needs review: ${logoError.message}`
+        : "Logo comparison could not be completed.";
+      logoVerification = failedLogoVerification(configuredLogo, message);
+    }
+
+    const outcome = logoVerification.outcome;
+    const mismatch = outcome === "MISMATCH" || (outcome === "NOT_DETECTED" && configuredLogo.isRequired);
+    const shouldFlag = mismatch || outcome === "NEEDS_REVIEW";
+    if (shouldFlag) {
+      const severity: ImageFinding["severity"] = mismatch && configuredLogo.isRequired ? "ERROR" : "WARNING";
+      findings.push({
+        category: "VISUAL",
+        severity,
+        title: outcome === "NOT_DETECTED"
+          ? "Required brand logo was not detected"
+          : outcome === "MISMATCH"
+            ? "Campaign logo may not match the approved reference"
+            : "Brand logo needs manual review",
+        message: logoVerification.summary,
+        evidence: [
+          `Reference: ${configuredLogo.name}`,
+          `Expected wordmark: ${configuredLogo.expectedWordmark || "Not specified"}`,
+          ...logoVerification.evidence,
+        ].join("; ").slice(0, 2000),
+        suggestion: logoVerification.suggestions.join(" ").slice(0, 2000) || "Compare the campaign logo with the official reference.",
+        ruleCode: visualRuleCode,
+        confidence: `Gemini visual comparison · ${logoVerification.confidence.toLowerCase()} confidence`,
+      });
+    }
   }
 
   const asset = await uploadImageToCloudinary(req.file.buffer);
 
-  return res.json({
+  const auditResult = {
     asset: {
       secureUrl: asset.secureUrl,
       publicId: asset.publicId,
@@ -292,14 +465,29 @@ async function processImageAudit(req: Request, res: Response) {
       height: metadata.height ?? null,
       dominantColors,
       approvedColors,
+      colorAnalysis,
       altTextLength: altText.length,
     },
     totalFindings: findings.length,
     findings,
+    logoVerification,
+  };
+  const auditReceipt = await prisma.auditReceipt.create({
+    data: {
+      id: createAuditReceiptId(),
+      kind: "IMAGE",
+      userId: req.authUser!.id,
+      brandProfileId: brand.id,
+      inputHash: imageAuditInputHash(asset, altText),
+      configHash: auditConfigHash(brand, "IMAGE"),
+      result: auditResult as unknown as Prisma.InputJsonValue,
+    },
   });
+
+  return res.json({ ...auditResult, auditReceiptId: auditReceipt.id });
 }
 
-imageAuditRouter.post("/", requireAuth, (req, res) => {
+imageAuditRouter.post("/", requireAuth, requireRoles("CREATOR"), (req, res) => {
   upload.single("image")(req, res, (uploadError) => {
     if (uploadError) {
       if (uploadError instanceof multer.MulterError) {

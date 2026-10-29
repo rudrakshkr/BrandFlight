@@ -146,7 +146,12 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
       handledInitialSelectionRef.current = null
       return
     }
-    void openInitialSelection()
+
+    const timerId = window.setTimeout(() => {
+      void openInitialSelection()
+    }, 0)
+
+    return () => window.clearTimeout(timerId)
   }, [initialSubmissionId, openInitialSelection])
 
   const addComment = async () => {
@@ -455,28 +460,81 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
 
                   {selected.imageAuditData ? (
                     <>
+                      {selected.imageAuditData.logoVerification && (
+                        <section className={`bf-logo-verification-card outcome-${selected.imageAuditData.logoVerification.outcome.toLowerCase()}`} aria-label="Brand logo verification">
+                          <div className="bf-logo-verification-heading">
+                            <div><span className="bf-logo-verification-eyebrow">OFFICIAL BRAND ASSET</span><h3>Logo verification</h3></div>
+                            <span className={`bf-logo-verification-badge outcome-${selected.imageAuditData.logoVerification.outcome.toLowerCase()}`}>
+                              {selected.imageAuditData.logoVerification.outcome === 'NOT_CONFIGURED' ? 'Not configured' : selected.imageAuditData.logoVerification.outcome.replace(/_/g, ' ')}
+                            </span>
+                          </div>
+                          {selected.imageAuditData.logoVerification.referenceLogo && (
+                            <div className="bf-logo-reference-row">
+                              <img src={selected.imageAuditData.logoVerification.referenceLogo.secureUrl} alt={`Approved reference: ${selected.imageAuditData.logoVerification.referenceLogo.name}`} loading="lazy" />
+                              <div><strong>{selected.imageAuditData.logoVerification.referenceLogo.name}</strong><p>{selected.imageAuditData.logoVerification.referenceLogo.expectedWordmark ? `Expected wordmark: ${selected.imageAuditData.logoVerification.referenceLogo.expectedWordmark}` : 'No expected wordmark configured'}</p><small>{selected.imageAuditData.logoVerification.required ? 'Logo required' : 'Logo optional'} · {selected.imageAuditData.logoVerification.confidence.toLowerCase()} confidence</small></div>
+                            </div>
+                          )}
+                          <p className="bf-logo-verification-summary">{selected.imageAuditData.logoVerification.summary}</p>
+                          <div className="bf-logo-check-grid">
+                            <span><small>Logo detected</small><strong>{selected.imageAuditData.logoVerification.outcome === 'NOT_CONFIGURED' ? 'Not checked' : selected.imageAuditData.logoVerification.outcome === 'NEEDS_REVIEW' ? 'Needs review' : selected.imageAuditData.logoVerification.logoDetected ? 'Yes' : 'No'}</strong></span>
+                            <span><small>Wordmark</small><strong>{selected.imageAuditData.logoVerification.wordmarkStatus.replace(/_/g, ' ')}</strong></span>
+                            <span><small>Logo colors</small><strong>{selected.imageAuditData.logoVerification.colorStatus.replace(/_/g, ' ')}</strong></span>
+                            <span><small>Integrity</small><strong>{selected.imageAuditData.logoVerification.integrityStatus.replace(/_/g, ' ')}</strong></span>
+                          </div>
+                          {selected.imageAuditData.logoVerification.evidence.length > 0 && <ul className="bf-logo-verification-list">{selected.imageAuditData.logoVerification.evidence.map((item, index) => <li key={`review-logo-evidence-${index}`}>{item}</li>)}</ul>}
+                          {selected.imageAuditData.logoVerification.suggestions.length > 0 && <ul className="bf-logo-verification-list suggestions">{selected.imageAuditData.logoVerification.suggestions.map((item, index) => <li key={`review-logo-suggestion-${index}`}>{item}</li>)}</ul>}
+                        </section>
+                      )}
                       <p>
-                        <b>Image findings:</b>{' '}
+                        <b>Image audit findings:</b>{' '}
                         {selected.imageAuditData.totalFindings}
+                        {selected.imageAuditData.image.colorAnalysis
+                          ? selected.imageAuditData.totalFindings === 0
+                            ? ' — no configured image rules were triggered; this is not a full accessibility certification.'
+                            : ' — review the configured findings below.'
+                          : ' — saved result predates per-color checks; re-run Image Audit for a current comparison.'}
                       </p>
 
+                      <div className="bf-image-audit-review-summary">
+                        <strong>
+                          {selected.imageAuditData.image.colorAnalysis
+                            ? `${selected.imageAuditData.image.colorAnalysis.filter((item) => item.matchesPalette).length} of ${selected.imageAuditData.image.colorAnalysis.length} dominant colors within palette tolerance`
+                            : 'This saved audit predates per-color palette comparison; re-run Image Audit for detailed matching.'}
+                        </strong>
+                        <span>Palette comparison is a simple RGB similarity check, not a full visual or WCAG assessment.</span>
+                      </div>
+                      {selected.imageAuditData.image.colorAnalysis ? (
+                        <div className="bf-color-audit-list bf-color-audit-list-review">
+                          {selected.imageAuditData.image.colorAnalysis.map((item) => (
+                            <div className={`bf-color-audit-item ${!item.nearestApprovedColor ? 'is-no-palette' : item.matchesPalette ? 'is-match' : 'is-off-palette'}`} key={`review-color-${item.color}`}>
+                              <span className="bf-swatch-color" style={{ backgroundColor: item.color }} />
+                              <div className="bf-color-audit-copy">
+                                <strong>{item.color}</strong>
+                                <span>{item.matchesPalette ? 'Within tolerance' : 'Outside tolerance'}</span>
+                              </div>
+                              <div className="bf-color-audit-nearest">
+                                <small>Nearest approved</small>
+                                <strong>{item.nearestApprovedColor ?? 'No palette'}</strong>
+                                {item.distance !== null && <small>RGB distance: {item.distance}</small>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="bf-swatch-list">
+                          {selected.imageAuditData.image.dominantColors.map((color) => (
+                            <div className="bf-swatch-item" key={`dominant-${color}`}>
+                              <span className="bf-swatch-color" style={{ backgroundColor: color }} />
+                              <code>{color}</code>
+                              <span className="bf-review-small">Detected</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <div className="bf-swatch-list">
-                        {selected.imageAuditData.image.dominantColors.map((color) => (
-                          <div className="bf-swatch-item" key={`dominant-${color}`}>
-                            <span
-                              className="bf-swatch-color"
-                              style={{ backgroundColor: color }}
-                            />
-                            <code>{color}</code>
-                            <span className="bf-review-small">Detected</span>
-                          </div>
-                        ))}
                         {selected.imageAuditData.image.approvedColors.map((color) => (
                           <div className="bf-swatch-item" key={`approved-${color}`}>
-                            <span
-                              className="bf-swatch-color"
-                              style={{ backgroundColor: color }}
-                            />
+                            <span className="bf-swatch-color" style={{ backgroundColor: color }} />
                             <code>{color}</code>
                             <span className="bf-review-small">Approved</span>
                           </div>

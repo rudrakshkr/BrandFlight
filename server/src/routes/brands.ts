@@ -1,4 +1,7 @@
-import { Router, type Response } from "express";
+import { Router, type Request, type Response } from "express";
+import { v2 as cloudinary } from "cloudinary";
+import multer from "multer";
+import sharp from "sharp";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth, requireRoles } from "../middleware/auth.js";
 
@@ -24,6 +27,49 @@ const RULE_CATEGORIES: RuleCategory[] = [
   "VISUAL",
   "ACCESSIBILITY",
 ];
+
+const MAX_LOGO_BYTES = 5 * 1024 * 1024;
+const logoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_LOGO_BYTES, files: 1, fields: 3 },
+});
+
+async function uploadApprovedLogo(buffer: Buffer) {
+  const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+  const apiKey = process.env.CLOUDINARY_API_KEY;
+  const apiSecret = process.env.CLOUDINARY_API_SECRET;
+  if (!cloudName || !apiKey || !apiSecret) {
+    throw new Error("Cloudinary credentials are not configured.");
+  }
+  cloudinary.config({ cloud_name: cloudName, api_key: apiKey, api_secret: apiSecret, secure: true });
+  return new Promise<{ secureUrl: string; publicId: string }>((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream({
+      folder: "brandflight/approved-brand-assets",
+      resource_type: "image",
+      use_filename: false,
+      unique_filename: true,
+      overwrite: false,
+    }, (error, result) => {
+      if (error) return reject(error);
+      if (!result?.secure_url || !result.public_id) {
+        return reject(new Error("Cloudinary returned no approved-logo URL or public ID."));
+      }
+      resolve({ secureUrl: result.secure_url, publicId: result.public_id });
+    });
+    stream.end(buffer);
+  });
+}
+
+function logoUploadError(res: Response, error: unknown) {
+  if (error instanceof multer.MulterError) {
+    return res.status(error.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({
+      error: error.code === "LIMIT_FILE_SIZE"
+        ? "The logo file must be 5 MB or smaller."
+        : "Upload one logo file of at most 5 MB.",
+    });
+  }
+  return res.status(400).json({ error: "Unable to process the logo upload." });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -162,6 +208,7 @@ brandsRouter.get("/:brandProfileId", async (req, res) => {
           where: { isActive: true },
           orderBy: { createdAt: "asc" },
         },
+        assets: { orderBy: { createdAt: "asc" } },
       },
     });
 
@@ -226,6 +273,128 @@ brandsRouter.patch("/:brandProfileId", async (req, res) => {
     return res.json(brand);
   } catch (error) {
     return databaseError(res, error, "Unable to update brand profile:");
+  }
+});
+
+// Upload or replace the brand's official primary logo. Manager-only through router middleware.
+brandsRouter.post("/:brandProfileId/assets/logo", (req, res) => {
+  logoUpload.single("logo")(req, res, (uploadError) => {
+    if (uploadError) return logoUploadError(res, uploadError);
+    void (async () => {
+      if (!req.file) return res.status(400).json({ error: "Choose a PNG, JPEG, or WebP logo file." });
+      const expectedWordmark = typeof req.body?.expectedWordmark === "string" ? req.body.expectedWordmark.trim() : "";
+      const description = typeof req.body?.description === "string" ? req.body.description.trim() : "";
+      const requiredRaw = req.body?.isRequired;
+      if (expectedWordmark.length > 120 || description.length > 1000) {
+        return res.status(400).json({ error: "Wordmark must be 120 characters or fewer and description 1,000 characters or fewer." });
+      }
+      if (requiredRaw !== undefined && requiredRaw !== "true" && requiredRaw !== "false") {
+        return res.status(400).json({ error: "isRequired must be true or false." });
+      }
+      const brand = await prisma.brandProfile.findUnique({ where: { id: req.params.brandProfileId } });
+      if (!brand) return res.status(404).json({ error: "Brand profile not found." });
+      const metadata = await sharp(req.file.buffer, { limitInputPixels: 40_000_000 }).metadata();
+      if (!metadata.format || !["png", "jpeg", "webp"].includes(metadata.format)) {
+        return res.status(415).json({ error: "Unsupported logo. Use PNG, JPEG, or WebP. Transparent PNG is recommended." });
+      }
+      const previous = await prisma.brandAsset.findUnique({
+        where: { brandProfileId_assetType: { brandProfileId: brand.id, assetType: "PRIMARY_LOGO" } },
+      });
+      const uploaded = await uploadApprovedLogo(req.file.buffer);
+      const originalName = req.file.originalname.split(/[\\/]/).pop() ?? "approved-logo";
+      const name = originalName.replace(/[^a-zA-Z0-9._ -]/g, "_").slice(0, 255) || "approved-logo";
+      const asset = await prisma.brandAsset.upsert({
+        where: { brandProfileId_assetType: { brandProfileId: brand.id, assetType: "PRIMARY_LOGO" } },
+        update: {
+          name, format: metadata.format, secureUrl: uploaded.secureUrl, publicId: uploaded.publicId,
+          expectedWordmark: expectedWordmark || null, description: description || null,
+          isRequired: requiredRaw === "true",
+        },
+        create: {
+          assetType: "PRIMARY_LOGO", name, format: metadata.format,
+          secureUrl: uploaded.secureUrl, publicId: uploaded.publicId,
+          expectedWordmark: expectedWordmark || null, description: description || null,
+          isRequired: requiredRaw === "true", brandProfileId: brand.id,
+        },
+      });
+      if (previous?.publicId && previous.publicId !== uploaded.publicId) {
+        try {
+          cloudinary.config({
+            cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+            api_key: process.env.CLOUDINARY_API_KEY,
+            api_secret: process.env.CLOUDINARY_API_SECRET,
+            secure: true,
+          });
+          await cloudinary.uploader.destroy(previous.publicId, { resource_type: "image" });
+        } catch (cleanupError) {
+          console.warn("Unable to remove replaced logo from Cloudinary:", cleanupError);
+        }
+      }
+      return res.status(201).json(asset);
+    })().catch((error: unknown) => {
+      console.error("Unable to save approved brand logo:", error);
+      if (!res.headersSent) return res.status(500).json({ error: "Unable to save the approved logo." });
+    });
+  });
+});
+
+// Update the approved logo's policy without re-uploading the reference image.
+brandsRouter.patch("/:brandProfileId/assets/logo", async (req, res) => {
+  const body: unknown = req.body;
+  if (!isRecord(body)) return res.status(400).json({ error: "A JSON object is required." });
+  const data: { expectedWordmark?: string | null; description?: string | null; isRequired?: boolean } = {};
+  if ("expectedWordmark" in body) {
+    if (body.expectedWordmark !== null && typeof body.expectedWordmark !== "string") {
+      return res.status(400).json({ error: "Expected wordmark must be text." });
+    }
+    const value = typeof body.expectedWordmark === "string" ? body.expectedWordmark.trim() : "";
+    if (value.length > 120) return res.status(400).json({ error: "Expected wordmark must be 120 characters or fewer." });
+    data.expectedWordmark = value || null;
+  }
+  if ("description" in body) {
+    if (body.description !== null && typeof body.description !== "string") return res.status(400).json({ error: "Logo description must be text." });
+    const value = typeof body.description === "string" ? body.description.trim() : "";
+    if (value.length > 1000) return res.status(400).json({ error: "Logo description must be 1,000 characters or fewer." });
+    data.description = value || null;
+  }
+  if ("isRequired" in body) {
+    if (typeof body.isRequired !== "boolean") return res.status(400).json({ error: "isRequired must be a boolean." });
+    data.isRequired = body.isRequired;
+  }
+  if (Object.keys(data).length === 0) return res.status(400).json({ error: "No valid logo settings supplied." });
+  try {
+    const existing = await prisma.brandAsset.findUnique({
+      where: { brandProfileId_assetType: { brandProfileId: req.params.brandProfileId, assetType: "PRIMARY_LOGO" } },
+    });
+    if (!existing) return res.status(404).json({ error: "Upload an official logo before editing its settings." });
+    return res.json(await prisma.brandAsset.update({ where: { id: existing.id }, data }));
+  } catch (error) {
+    return databaseError(res, error, "Unable to update approved logo settings:");
+  }
+});
+
+// Remove the configured reference (does not delete campaign images).
+brandsRouter.delete("/:brandProfileId/assets/logo", async (req, res) => {
+  try {
+    const existing = await prisma.brandAsset.findUnique({
+      where: { brandProfileId_assetType: { brandProfileId: req.params.brandProfileId, assetType: "PRIMARY_LOGO" } },
+    });
+    if (!existing) return res.status(404).json({ error: "No approved logo is configured." });
+    await prisma.brandAsset.delete({ where: { id: existing.id } });
+    try {
+      cloudinary.config({
+        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+        api_key: process.env.CLOUDINARY_API_KEY,
+        api_secret: process.env.CLOUDINARY_API_SECRET,
+        secure: true,
+      });
+      await cloudinary.uploader.destroy(existing.publicId, { resource_type: "image" });
+    } catch (cleanupError) {
+      console.warn("Unable to remove deleted approved logo from Cloudinary:", cleanupError);
+    }
+    return res.status(204).end();
+  } catch (error) {
+    return databaseError(res, error, "Unable to remove approved logo:");
   }
 });
 

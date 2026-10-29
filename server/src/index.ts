@@ -2,6 +2,8 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { prisma } from "./lib/prisma.js";
+import { Prisma } from "../generated/prisma/client.js";
+import { auditConfigHash, createAuditReceiptId, sha256Text } from "./lib/audit-receipts.js";
 import { refineMarketingCopy, runSemanticAudit } from "./lib/gemini.js";
 import { brandsRouter } from "./routes/brands.js";
 import { authRouter } from "./routes/auth.js";
@@ -53,14 +55,15 @@ app.post("/api/audit/refine", requireAuth, requireRoles("CREATOR"), async (req, 
   }
 });
 
-app.post("/api/audit", requireAuth, async (req, res) => {
+app.post("/api/audit", requireAuth, requireRoles("CREATOR"), async (req, res) => {
   const { brandProfileId, content } = req.body ?? {};
 
   if (
     typeof brandProfileId !== "string" ||
     typeof content !== "string" ||
     !brandProfileId.trim() ||
-    !content.trim()
+    !content.trim() ||
+    content.length > 20000
   ) {
     return res.status(400).json({
       error: "brandProfileId and content are required.",
@@ -186,12 +189,25 @@ app.post("/api/audit", requireAuth, async (req, res) => {
       semanticStatus = "unavailable";
     }
 
-    return res.json({
+    const auditResult = {
       brand: { id: brand.id, name: brand.name },
       totalFindings: findings.length,
       findings,
-      semanticStatus
+      semanticStatus,
+    };
+    const auditReceipt = await prisma.auditReceipt.create({
+      data: {
+        id: createAuditReceiptId(),
+        kind: "TEXT",
+        userId: req.authUser!.id,
+        brandProfileId: brand.id,
+        inputHash: sha256Text(content),
+        configHash: auditConfigHash(brand, "TEXT"),
+        result: auditResult as unknown as Prisma.InputJsonValue,
+      },
     });
+
+    return res.json({ ...auditResult, auditReceiptId: auditReceipt.id });
   } catch (error) {
     console.error("Audit failed:", error);
     return res.status(500).json({ error: "Unable to audit content." });
