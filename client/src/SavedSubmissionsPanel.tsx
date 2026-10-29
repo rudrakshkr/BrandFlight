@@ -444,7 +444,7 @@ export default function SavedSubmissionsPanel({
               {filteredSubmissions.map((item) => {
                 const editable = item.status === 'DRAFT' || item.status === 'CHANGES_REQUESTED'
                 const isEditing = editingDetailsId === item.id
-                const busy = openingId !== null || submittingId !== null || savingDetailsId !== null
+                const busy = openingId === item.id || submittingId === item.id || savingDetailsId === item.id
 
                 return (
                   <article className="bf-saved-card" key={item.id}>
@@ -474,7 +474,7 @@ export default function SavedSubmissionsPanel({
                       <button
                         type="button"
                         className="bf-saved-discussion-link"
-                        disabled={busy || discussionLoadingId !== null}
+                        disabled={busy || discussionLoadingId === item.id}
                         onClick={() => void handleViewDiscussion(item)}
                       >
                         {discussionLoadingId === item.id
@@ -584,13 +584,23 @@ export default function SavedSubmissionsPanel({
                   <p>Reviewer and manager comments will appear here as soon as they are posted. You can also leave a comment for the review team.</p>
                 </div>
               ) : discussion.comments.map((comment) => (
-                <article className="bf-discussion-comment" key={comment.id}>
+                <article className={`bf-discussion-comment${comment.body.startsWith('OVERRIDE REQUEST') ? ' bf-discussion-comment-override' : ''}`} key={comment.id}>
                   <div className="bf-discussion-comment-meta">
                     <strong>{comment.author?.name ?? 'Workspace member'}</strong>
                     <span>{comment.author?.role ?? 'User'}</span>
                     <time dateTime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time>
                   </div>
-                  <p>{comment.body}</p>
+                  {comment.body.startsWith('OVERRIDE REQUEST') ? (
+                    <>
+                      <span className="bf-override-message-badge">Creator override request</span>
+                      <div className="bf-override-message-content">
+                        {comment.body.split('\n').slice(1).filter(Boolean).map((line, index) => {
+                          const separator = line.indexOf(':')
+                          return <p key={`${comment.id}-detail-${index}`}>{separator > 0 ? <><strong>{line.slice(0, separator + 1)}</strong> {line.slice(separator + 1).trim()}</> : line}</p>
+                        })}
+                      </div>
+                    </>
+                  ) : <p>{comment.body}</p>}
                 </article>
               ))}
             </div>

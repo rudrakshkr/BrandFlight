@@ -2,12 +2,12 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { prisma } from "./lib/prisma.js";
-import { runSemanticAudit } from "./lib/gemini.js";
+import { refineMarketingCopy, runSemanticAudit } from "./lib/gemini.js";
 import { brandsRouter } from "./routes/brands.js";
 import { authRouter } from "./routes/auth.js";
 import { submissionsRouter } from "./routes/submissions.js";
 import { imageAuditRouter } from "./routes/image-audit.js";
-import { requireAuth } from "./middleware/auth.js";
+import { requireAuth, requireRoles } from "./middleware/auth.js";
 
 const app = express();
 
@@ -22,6 +22,36 @@ app.use("/api/brands", brandsRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/submissions", submissionsRouter);
 app.use("/api/audit/image", imageAuditRouter);
+
+app.post("/api/audit/refine", requireAuth, requireRoles("CREATOR"), async (req, res) => {
+  const body: unknown = req.body;
+  if (
+    typeof body !== "object" || body === null || Array.isArray(body) ||
+    !("brandProfileId" in body) || typeof body.brandProfileId !== "string" || !body.brandProfileId.trim() ||
+    !("content" in body) || typeof body.content !== "string" || !body.content.trim() || body.content.length > 20000
+  ) {
+    return res.status(400).json({ error: "brandProfileId and content (up to 20,000 characters) are required." });
+  }
+
+  const payload = body as { brandProfileId: string; content: string };
+  try {
+    const brand = await prisma.brandProfile.findUnique({
+      where: { id: payload.brandProfileId },
+      include: { rules: { where: { isActive: true } }, facts: { where: { isActive: true } } },
+    });
+    if (!brand) return res.status(404).json({ error: "Brand profile not found." });
+
+    const refinedContent = await refineMarketingCopy(
+      payload.content,
+      brand.rules.map(({ ruleCode, category, title, description }) => ({ ruleCode, category, title, description })),
+      brand.facts.map(({ factCode, claim }) => ({ factCode, claim })),
+    );
+    return res.json({ brand: { id: brand.id, name: brand.name }, refinedContent });
+  } catch (error) {
+    console.error("Copy refinement failed:", error);
+    return res.status(502).json({ error: "Unable to refine copy. Check the Gemini configuration and try again." });
+  }
+});
 
 app.post("/api/audit", requireAuth, async (req, res) => {
   const { brandProfileId, content } = req.body ?? {};

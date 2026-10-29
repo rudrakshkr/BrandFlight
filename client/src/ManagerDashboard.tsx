@@ -17,6 +17,7 @@ interface ManagerDashboardProps {
   token: string
   onOpenReviewQueue: () => void
   onOpenRulebook: () => void
+  onOpenSubmission: (submissionId: string) => void
 }
 
 const STATUS_META: Record<string, { label: string; className: string }> = {
@@ -36,6 +37,7 @@ export default function ManagerDashboard({
   token,
   onOpenReviewQueue,
   onOpenRulebook,
+  onOpenSubmission,
 }: ManagerDashboardProps) {
   const [submissions, setSubmissions] = useState<SubmissionSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -198,7 +200,15 @@ export default function ManagerDashboard({
                     className: 'draft',
                   }
                   return (
-                    <tr key={item.id}>
+                    <tr
+                      key={item.id}
+                      className="bf-manager-row-clickable"
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`Open campaign ${item.title}`}
+                      onClick={() => onOpenSubmission(item.id)}
+                      onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenSubmission(item.id) } }}
+                    >
                       <td>
                         <strong>{item.title}</strong>
                         <small>{item.brandProfile?.name ?? 'BrandFlight'}</small>

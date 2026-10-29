@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ImageAuditData } from './types/imageAudit'
 
 type Decision = 'APPROVED' | 'CHANGES_REQUESTED'
@@ -49,14 +49,18 @@ interface Detail extends Summary {
 interface Props {
   apiBaseUrl: string
   token: string
+  initialSubmissionId?: string | null
+  onInitialSelectionHandled?: () => void
 }
 
-export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
+export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionId = null, onInitialSelectionHandled }: Props) {
   const [queue, setQueue] = useState<Summary[]>([])
   const [selected, setSelected] = useState<Detail | null>(null)
   const [loading, setLoading] = useState(true)
   const [openingId, setOpeningId] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const handledInitialSelectionRef = useRef<string | null>(null)
+  const [commentBusy, setCommentBusy] = useState(false)
+  const [decisionBusy, setDecisionBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [commentText, setCommentText] = useState('')
@@ -80,7 +84,8 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
         throw new Error(data?.error ?? `Could not load queue (HTTP ${response.status}).`)
       }
 
-      setQueue(data.submissions.filter((item) => item.status !== 'DRAFT'))
+      // Keep drafts in memory for manager-console deep links; the visible queue still filters them out.
+      setQueue(data.submissions)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load review queue.')
     } finally {
@@ -96,11 +101,10 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
     return () => window.clearTimeout(timerId)
   }, [loadQueue])
 
-  const openSubmission = async (item: Summary) => {
+  const openSubmission = useCallback(async (item: Summary) => {
     setOpeningId(item.id)
     setError(null)
     setNotice(null)
-
     try {
       const response = await fetch(
         `${apiBaseUrl}/api/submissions/${encodeURIComponent(item.id)}`,
@@ -110,10 +114,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
         submission?: Detail
         error?: string
       } | null
-
-      if (!response.ok || !data?.submission) {
-        throw new Error(data?.error ?? `Could not open submission (HTTP ${response.status}).`)
-      }
+      if (!response.ok || !data?.submission) throw new Error(data?.error ?? `Could not open submission (HTTP ${response.status}).`)
       setSelected(data.submission)
       setCommentText('')
     } catch (err) {
@@ -121,12 +122,37 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
     } finally {
       setOpeningId(null)
     }
-  }
+  }, [apiBaseUrl, token])
+
+  const openInitialSelection = useCallback(async () => {
+    if (!initialSubmissionId || loading || handledInitialSelectionRef.current === initialSubmissionId) return
+    const item = queue.find((entry) => entry.id === initialSubmissionId)
+    if (!item) {
+      handledInitialSelectionRef.current = initialSubmissionId
+      onInitialSelectionHandled?.()
+      return
+    }
+    handledInitialSelectionRef.current = initialSubmissionId
+    if (item.status !== 'IN_REVIEW') setQueueView('HISTORY')
+    try {
+      await openSubmission(item)
+    } finally {
+      onInitialSelectionHandled?.()
+    }
+  }, [initialSubmissionId, loading, queue, openSubmission, onInitialSelectionHandled])
+
+  useEffect(() => {
+    if (!initialSubmissionId) {
+      handledInitialSelectionRef.current = null
+      return
+    }
+    void openInitialSelection()
+  }, [initialSubmissionId, openInitialSelection])
 
   const addComment = async () => {
-    if (!selected || !commentText.trim() || busy) return
+    if (!selected || !commentText.trim() || commentBusy) return
 
-    setBusy(true)
+    setCommentBusy(true)
     setError(null)
     setNotice(null)
 
@@ -159,12 +185,12 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not add comment.')
     } finally {
-      setBusy(false)
+      setCommentBusy(false)
     }
   }
 
   const openDecisionConfirmation = (status: Decision) => {
-    if (!selected || busy) return
+    if (!selected || decisionBusy) return
     if (status === 'CHANGES_REQUESTED' && !commentText.trim()) {
       setError('Add a comment explaining the requested changes.')
       return
@@ -175,14 +201,14 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
   }
 
   const decide = async (status: Decision) => {
-    if (!selected || busy) return
+    if (!selected || decisionBusy) return
 
     if (status === 'CHANGES_REQUESTED' && !commentText.trim()) {
       setError('Add a comment explaining the requested changes.')
       return
     }
 
-    setBusy(true)
+    setDecisionBusy(true)
     setError(null)
     setNotice(null)
     const title = selected.title
@@ -222,24 +248,25 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
       setPendingDecision(null)
       setError(err instanceof Error ? err.message : 'Could not record decision.')
     } finally {
-      setBusy(false)
+      setDecisionBusy(false)
     }
   }
 
   useEffect(() => {
-    if (!pendingDecision || busy) return
+    if (!pendingDecision || decisionBusy) return
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setPendingDecision(null)
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [pendingDecision, busy])
+  }, [pendingDecision, decisionBusy])
 
   const visibleQueue = queue.filter((item) => queueView === 'IN_REVIEW'
     ? item.status === 'IN_REVIEW'
-    : item.status === 'APPROVED' || item.status === 'CHANGES_REQUESTED')
+    : item.status === 'APPROVED' || item.status === 'CHANGES_REQUESTED' || item.status === 'DRAFT')
   const reviewCount = queue.filter((item) => item.status === 'IN_REVIEW').length
-  const historyCount = queue.filter((item) => item.status === 'APPROVED' || item.status === 'CHANGES_REQUESTED').length
+  const historyCount = queue.filter((item) => item.status !== 'IN_REVIEW').length
+  const historyLabel = queue.some((item) => item.status === 'DRAFT') ? 'History & drafts' : 'Review history'
 
   return (
     <section className="bf-review-page">
@@ -254,7 +281,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
           type="button"
           className="bf-btn-secondary"
           onClick={() => void loadQueue()}
-          disabled={loading || busy}
+          disabled={loading}
         >
           {loading ? 'Refreshing…' : 'Refresh Queue'}
         </button>
@@ -267,7 +294,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
         <div
           className="bf-decision-confirmation-overlay"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !busy) setPendingDecision(null)
+            if (event.target === event.currentTarget && !decisionBusy) setPendingDecision(null)
           }}
         >
           <section
@@ -305,7 +332,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
                 type="button"
                 className="bf-btn-secondary"
                 autoFocus
-                disabled={busy}
+                disabled={decisionBusy}
                 onClick={() => setPendingDecision(null)}
               >
                 Cancel
@@ -313,10 +340,10 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
               <button
                 type="button"
                 className={pendingDecision === 'APPROVED' ? 'bf-btn-primary' : 'bf-review-request'}
-                disabled={busy}
+                disabled={decisionBusy}
                 onClick={() => void decide(pendingDecision)}
               >
-                {busy
+                {decisionBusy
                   ? 'Saving…'
                   : pendingDecision === 'APPROVED'
                     ? 'Confirm Approval'
@@ -330,7 +357,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
       <div className="bf-review-layout">
         <aside className="bf-review-list">
           <div className="bf-review-list-header">
-            <h2>{queueView === 'IN_REVIEW' ? 'Awaiting review' : 'Review history'}</h2>
+            <h2>{queueView === 'IN_REVIEW' ? 'Awaiting review' : historyLabel}</h2>
             <span>{visibleQueue.length}</span>
           </div>
           <div className="bf-review-tabs" aria-label="Review queue views">
@@ -338,7 +365,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
               Awaiting review <span>{reviewCount}</span>
             </button>
             <button type="button" className={queueView === 'HISTORY' ? 'active' : ''} aria-pressed={queueView === 'HISTORY'} onClick={() => setQueueView('HISTORY')}>
-              Review history <span>{historyCount}</span>
+              {historyLabel} <span>{historyCount}</span>
             </button>
           </div>
 
@@ -346,7 +373,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
             <p className="bf-review-empty">Loading campaigns…</p>
           ) : visibleQueue.length === 0 ? (
             <div className="bf-review-empty">
-              <h3>{queueView === 'IN_REVIEW' ? 'Queue is clear' : 'No review history yet'}</h3>
+              <h3>{queueView === 'IN_REVIEW' ? 'Queue is clear' : historyLabel === 'History & drafts' ? 'No other campaigns' : 'No review history yet'}</h3>
               <p>{queueView === 'IN_REVIEW' ? 'New submissions awaiting a decision will appear here.' : 'Approved campaigns and campaigns returned for changes will appear here.'}</p>
             </div>
           ) : visibleQueue.map((item) => (
@@ -354,7 +381,8 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
               type="button"
               key={item.id}
               className={`bf-review-queue-item ${selected?.id === item.id ? 'active' : ''}`}
-              disabled={openingId !== null || busy}
+              aria-busy={openingId === item.id}
+              disabled={openingId !== null || decisionBusy}
               onClick={() => void openSubmission(item)}
             >
               <span className="bf-review-queue-status">{item.status.replace(/_/g, ' ')} · {item._count.findings} findings · {item._count.comments} comments</span>
@@ -367,7 +395,18 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
           ))}
         </aside>
 
-        <div className="bf-review-detail">
+        <div className="bf-review-detail" aria-busy={openingId !== null}>
+          {openingId && (
+            <div className="bf-review-opening-overlay" role="status" aria-live="polite">
+              <div className="bf-review-opening-indicator">
+                <span className="bf-loading-spinner" aria-hidden="true" />
+                <div>
+                  <strong>Opening campaign…</strong>
+                  <p>Loading submitted copy, image audit, discussion, and revision history.</p>
+                </div>
+              </div>
+            </div>
+          )}
           {!selected ? (
             <div className="bf-review-empty bf-review-detail-empty">
               <h2>Select a submission</h2>
@@ -497,13 +536,23 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
                 {selected.comments.length === 0 ? (
                   <p className="bf-review-small">No comments yet. Comments and decision notes will be kept together here.</p>
                 ) : selected.comments.map((comment) => (
-                  <article className="bf-review-comment" key={comment.id}>
+                  <article className={`bf-review-comment${comment.body.startsWith('OVERRIDE REQUEST') ? ' bf-review-comment-override' : ''}`} key={comment.id}>
                     <div className="bf-review-comment-meta">
                       <strong>{comment.author?.name ?? 'User'}</strong>
                       <span>{comment.author?.role ?? ''}</span>
                       <time>{new Date(comment.createdAt).toLocaleString()}</time>
                     </div>
-                    <p>{comment.body}</p>
+                    {comment.body.startsWith('OVERRIDE REQUEST') ? (
+                      <>
+                        <span className="bf-override-message-badge">Creator override request</span>
+                        <div className="bf-override-message-content">
+                          {comment.body.split('\n').slice(1).filter(Boolean).map((line, index) => {
+                            const separator = line.indexOf(':')
+                            return <p key={`${comment.id}-detail-${index}`}>{separator > 0 ? <><strong>{line.slice(0, separator + 1)}</strong> {line.slice(separator + 1).trim()}</> : line}</p>
+                          })}
+                        </div>
+                      </>
+                    ) : <p>{comment.body}</p>}
                   </article>
                 ))}
 
@@ -520,18 +569,18 @@ export default function ReviewQueuePanel({ apiBaseUrl, token }: Props) {
                       value={commentText}
                       onChange={(event) => setCommentText(event.target.value)}
                       placeholder="Post a comment, or explain the changes needed before requesting changes…"
-                      disabled={busy}
+                      disabled={commentBusy || decisionBusy}
                     />
                     <p className="bf-review-note-hint">Post Comment saves a discussion note. Request Changes saves this text as the required feedback. An optional note entered before approval is also kept in the thread.</p>
                     <div className="bf-review-decision-buttons">
-                      <button className="bf-btn-secondary" type="submit" disabled={busy || !commentText.trim()}>
-                        {busy ? 'Saving…' : 'Post Comment'}
+                      <button className="bf-btn-secondary" type="submit" disabled={commentBusy || decisionBusy || !commentText.trim()}>
+                        {commentBusy ? 'Posting…' : 'Post Comment'}
                       </button>
-                      <button type="button" className="bf-review-request" disabled={busy || !commentText.trim()} onClick={() => openDecisionConfirmation('CHANGES_REQUESTED')}>
-                        {busy ? 'Saving…' : 'Request Changes'}
+                      <button type="button" className="bf-review-request" disabled={decisionBusy || !commentText.trim()} onClick={() => openDecisionConfirmation('CHANGES_REQUESTED')}>
+                        {decisionBusy ? 'Saving…' : 'Request Changes'}
                       </button>
-                      <button type="button" className="bf-btn-primary" disabled={busy} onClick={() => openDecisionConfirmation('APPROVED')}>
-                        {busy ? 'Saving…' : 'Approve'}
+                      <button type="button" className="bf-btn-primary" disabled={decisionBusy} onClick={() => openDecisionConfirmation('APPROVED')}>
+                        {decisionBusy ? 'Saving…' : 'Approve'}
                       </button>
                     </div>
                   </form>

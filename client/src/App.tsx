@@ -58,6 +58,15 @@ interface RawAuditFinding {
   confidence: string
 }
 
+interface FindingMatch {
+  evidence: string
+  originalSpan: string | null
+  suggestedSpan: string | null
+  suggestion: string
+  confidence: string
+  ruleCodes: string[]
+}
+
 interface ConsolidatedFinding {
   id: string
   category: RuleCategory
@@ -70,6 +79,7 @@ interface ConsolidatedFinding {
   ruleCodes: string[]
   evidences: string[]
   confidences: string[]
+  matches: FindingMatch[]
   mergedCount: number
 }
 
@@ -221,20 +231,28 @@ function consolidateFindings(
 
   for (const item of rawFindings) {
     const trimmedEvidence = item.evidence.trim()
-    const lowerEv = trimmedEvidence.toLowerCase()
+    const lowerEvidence = trimmedEvidence.toLowerCase()
 
-    const existingGroup = groups.find((group) => {
+    // Prefer grouping every occurrence produced by the same rule. If two rules
+    // flag overlapping text, retain the earlier evidence-consolidation behavior.
+    const existingGroup = groups.find((group) =>
+      group.category === item.category && group.ruleCodes.includes(item.ruleCode),
+    ) ?? groups.find((group) => {
       if (group.category !== item.category) return false
-
-      // 1. Direct substring overlap (e.g., "95%" inside "We guarantee a 95% productivity boost...")
-      const hasSubstringOverlap = group.evidences.some((ev) => {
-        const gEv = ev.toLowerCase()
-        return gEv.includes(lowerEv) || lowerEv.includes(gEv)
+      return group.evidences.some((evidence) => {
+        const lower = evidence.toLowerCase()
+        return lower.includes(lowerEvidence) || lowerEvidence.includes(lower)
       })
-      if (hasSubstringOverlap) return true
-
-      return false
     })
+
+    const incomingMatch: FindingMatch = {
+      evidence: trimmedEvidence,
+      originalSpan: item.originalSpan?.trim() || null,
+      suggestedSpan: item.suggestedSpan?.trim() || null,
+      suggestion: item.suggestion,
+      confidence: item.confidence,
+      ruleCodes: [item.ruleCode],
+    }
 
     if (!existingGroup) {
       groups.push({
@@ -249,50 +267,51 @@ function consolidateFindings(
         ruleCodes: [item.ruleCode],
         evidences: trimmedEvidence ? [trimmedEvidence] : [],
         confidences: [item.confidence],
+        matches: trimmedEvidence ? [incomingMatch] : [],
         mergedCount: 1,
       })
-    } else {
-      existingGroup.mergedCount += 1
-
-      if (SEVERITY_RANK[item.severity] > SEVERITY_RANK[existingGroup.severity]) {
-        existingGroup.severity = item.severity
-      }
-
-      // Prefer a more specific semantic explanation over a generic deterministic message
-      const isExistingGeneric =
-        existingGroup.title === 'Unverified numerical claim' ||
-        existingGroup.message.startsWith('Content matched rule')
-      const isIncomingSpecific =
-        item.title !== 'Unverified numerical claim' &&
-        !item.message.startsWith('Content matched rule')
-
-      if (isExistingGeneric && isIncomingSpecific) {
-        existingGroup.title = item.title
-        existingGroup.message = item.message
-        existingGroup.suggestion = item.suggestion
-      }
-
-      // Only retain a direct replacement explicitly returned by the audit engine.
-      if (!existingGroup.suggestedSpan && item.originalSpan?.trim() && item.suggestedSpan?.trim()) {
-        existingGroup.originalSpan = item.originalSpan.trim()
-        existingGroup.suggestedSpan = item.suggestedSpan.trim()
-      }
-
-      if (!existingGroup.ruleCodes.includes(item.ruleCode)) {
-        existingGroup.ruleCodes.push(item.ruleCode)
-      }
-
-      if (
-        trimmedEvidence &&
-        !existingGroup.evidences.some((e) => e.toLowerCase() === lowerEv)
-      ) {
-        existingGroup.evidences.push(trimmedEvidence)
-      }
-
-      if (!existingGroup.confidences.includes(item.confidence)) {
-        existingGroup.confidences.push(item.confidence)
-      }
+      continue
     }
+
+    existingGroup.mergedCount += 1
+    if (SEVERITY_RANK[item.severity] > SEVERITY_RANK[existingGroup.severity]) {
+      existingGroup.severity = item.severity
+    }
+
+    const existingIsGeneric =
+      existingGroup.title === 'Unverified numerical claim' ||
+      existingGroup.message.startsWith('Content matched rule')
+    const incomingIsSpecific =
+      item.title !== 'Unverified numerical claim' &&
+      !item.message.startsWith('Content matched rule')
+    if (existingIsGeneric && incomingIsSpecific) {
+      existingGroup.title = item.title
+      existingGroup.message = item.message
+      existingGroup.suggestion = item.suggestion
+    }
+
+    const exactMatch = existingGroup.matches.find(
+      (match) => match.evidence.toLowerCase() === lowerEvidence,
+    )
+    if (exactMatch) {
+      if (!exactMatch.ruleCodes.includes(item.ruleCode)) exactMatch.ruleCodes.push(item.ruleCode)
+      if (!exactMatch.originalSpan && incomingMatch.originalSpan) exactMatch.originalSpan = incomingMatch.originalSpan
+      if (!exactMatch.suggestedSpan && incomingMatch.suggestedSpan) exactMatch.suggestedSpan = incomingMatch.suggestedSpan
+      if ((!exactMatch.suggestion || exactMatch.suggestion.length < item.suggestion.length) && item.suggestion) {
+        exactMatch.suggestion = item.suggestion
+      }
+      if (!exactMatch.confidence) exactMatch.confidence = item.confidence
+    } else if (trimmedEvidence) {
+      existingGroup.matches.push(incomingMatch)
+    }
+
+    if (!existingGroup.originalSpan && incomingMatch.originalSpan) existingGroup.originalSpan = incomingMatch.originalSpan
+    if (!existingGroup.suggestedSpan && incomingMatch.suggestedSpan) existingGroup.suggestedSpan = incomingMatch.suggestedSpan
+    if (!existingGroup.ruleCodes.includes(item.ruleCode)) existingGroup.ruleCodes.push(item.ruleCode)
+    if (trimmedEvidence && !existingGroup.evidences.some((evidence) => evidence.toLowerCase() === lowerEvidence)) {
+      existingGroup.evidences.push(trimmedEvidence)
+    }
+    if (!existingGroup.confidences.includes(item.confidence)) existingGroup.confidences.push(item.confidence)
   }
 
   return groups
@@ -390,6 +409,12 @@ export function App() {
   }, [navigate, routeSubmissionId])
 
   const [authSession, setAuthSession] = useState<AuthSession | null>(null)
+  const [pendingManagerSubmissionId, setPendingManagerSubmissionId] = useState<string | null>(null)
+  const handleManagerOpenSubmission = useCallback((submissionId: string) => {
+    setPendingManagerSubmissionId(submissionId)
+    setActiveView('review')
+  }, [setActiveView])
+  const handleInitialReviewSelectionHandled = useCallback(() => setPendingManagerSubmissionId(null), [])
   const [authChecking, setAuthChecking] = useState(
     () => Boolean(window.sessionStorage.getItem('brandflight_token')),
   )
@@ -418,6 +443,9 @@ export function App() {
 
   const [apiHealth, setApiHealth] = useState<'checking' | 'online' | 'offline'>('checking')
   const [isAuditing, setIsAuditing] = useState<boolean>(false)
+  const [refineBusy, setRefineBusy] = useState(false)
+  const [refineError, setRefineError] = useState<string | null>(null)
+  const [refineMessage, setRefineMessage] = useState<string | null>(null)
   const [auditError, setAuditError] = useState<string | null>(null)
   const [auditResult, setAuditResult] = useState<AuditApiResponse | null>(null)
   const [auditRestoredFromSubmission, setAuditRestoredFromSubmission] = useState(false)
@@ -780,6 +808,20 @@ export function App() {
     (comment) => comment.author?.role === 'REVIEWER' || comment.author?.role === 'MANAGER',
   )
 
+  const hasOverrideRequest = (group: ConsolidatedFinding, match?: FindingMatch) => submissionComments.some((comment) => {
+    const body = comment.body ?? ''
+    if (!body.startsWith('OVERRIDE REQUEST')) return false
+    const ruleLine = body.split('\n').find((line) => line.startsWith('Rule(s): ')) ?? ''
+    const requestedRules = ruleLine.slice('Rule(s): '.length).split(',').map((code) => code.trim())
+    const evidenceLine = body.split('\n').find((line) => line.startsWith('Flagged evidence: ')) ?? ''
+    const requestedEvidence = evidenceLine.slice('Flagged evidence: '.length).split(' / ').map((value) => value.trim().toLowerCase()).filter(Boolean)
+    const targetRules = match?.ruleCodes ?? group.ruleCodes
+    const hasRule = targetRules.some((code) => requestedRules.includes(code))
+    if (!hasRule) return false
+    if (match) return requestedEvidence.includes(match.evidence.trim().toLowerCase())
+    return group.evidences.some((evidence) => requestedEvidence.includes(evidence.trim().toLowerCase()))
+  })
+
   const activeEvidences = useMemo(
     () => consolidatedFindings.flatMap((group) => group.evidences),
     [consolidatedFindings],
@@ -820,73 +862,85 @@ export function App() {
     }
   }
 
-  const handleCopyGuidance = async (group: ConsolidatedFinding) => {
-    const guidance = group.suggestion.trim()
+  const occurrenceFeedbackId = (group: ConsolidatedFinding, match?: FindingMatch) =>
+    `${group.id}::${match?.evidence ?? group.evidences[0] ?? ''}`
+
+  const handleCopyGuidance = async (group: ConsolidatedFinding, match?: FindingMatch) => {
+    const guidance = (match?.suggestion || group.suggestion).trim()
+    const feedbackId = occurrenceFeedbackId(group, match)
     if (!guidance) {
-      setGuidanceCopyFeedback({
-        groupId: group.id,
-        message: 'No guidance is available to copy for this finding.',
-        isError: true,
-      })
+      setGuidanceCopyFeedback({ groupId: feedbackId, message: 'No guidance is available to copy for this finding.', isError: true })
       return
     }
-
     try {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error('Clipboard access is unavailable in this browser context.')
-      }
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard access is unavailable in this browser context.')
       await navigator.clipboard.writeText(guidance)
-      setGuidanceCopyFeedback({
-        groupId: group.id,
-        message: 'Guidance copied. Edit the flagged copy, then re-run Preflight Audit.',
-        isError: false,
-      })
+      setGuidanceCopyFeedback({ groupId: feedbackId, message: 'Guidance copied. Edit the flagged copy, then re-run Preflight Audit.', isError: false })
     } catch {
-      setGuidanceCopyFeedback({
-        groupId: group.id,
-        message: 'Clipboard access failed. Select and copy the guidance text above.',
-        isError: true,
-      })
+      setGuidanceCopyFeedback({ groupId: feedbackId, message: 'Clipboard access failed. Select and copy the guidance text above.', isError: true })
     }
   }
 
-  const handleApplySuggestion = (group: ConsolidatedFinding) => {
-    const originalSpan = group.originalSpan?.trim()
-    const suggestedSpan = group.suggestedSpan?.trim()
+  const handleApplySuggestion = (group: ConsolidatedFinding, match?: FindingMatch) => {
+    const selectedMatch = match ?? group.matches[0]
+    if (!selectedMatch) return
+    const originalSpan = selectedMatch.originalSpan?.trim()
+    const suggestedSpan = selectedMatch.suggestedSpan?.trim()
+    const feedbackId = occurrenceFeedbackId(group, selectedMatch)
 
     if (!originalSpan || !suggestedSpan) {
-      setGuidanceCopyFeedback({ groupId: group.id, message: 'This finding has guidance but no safe direct replacement. Edit the copy manually.', isError: true })
+      setGuidanceCopyFeedback({ groupId: feedbackId, message: 'This finding has guidance but no safe direct replacement. Edit the copy manually.', isError: true })
       return
     }
     if (auditedContent !== content) {
-      setGuidanceCopyFeedback({ groupId: group.id, message: 'Run Preflight Audit on the current copy before applying a suggestion from these findings.', isError: true })
+      setGuidanceCopyFeedback({ groupId: feedbackId, message: 'Run Preflight Audit on the current copy before applying a suggestion from these findings.', isError: true })
       return
     }
 
     const start = content.indexOf(originalSpan)
     if (start < 0) {
-      setGuidanceCopyFeedback({ groupId: group.id, message: 'The original phrase is no longer present. Run Preflight Audit again.', isError: true })
+      setGuidanceCopyFeedback({ groupId: feedbackId, message: 'The original phrase is no longer present. Run Preflight Audit again.', isError: true })
       return
     }
     if (content.indexOf(originalSpan, start + originalSpan.length) >= 0) {
-      setGuidanceCopyFeedback({ groupId: group.id, message: 'This phrase appears more than once. Use Locate in editor and edit the intended occurrence manually.', isError: true })
+      setGuidanceCopyFeedback({ groupId: feedbackId, message: 'This phrase appears more than once. Use Locate in editor and edit the intended occurrence manually.', isError: true })
       return
     }
 
     const nextContent = `${content.slice(0, start)}${suggestedSpan}${content.slice(start + originalSpan.length)}`
     setContent(nextContent)
+    setAuditResult((current) => {
+      if (!current) return current
+      const targetEvidence = selectedMatch.evidence.trim().toLowerCase()
+      const remaining = current.findings.filter((finding) =>
+        finding.category !== group.category || finding.evidence.trim().toLowerCase() !== targetEvidence || !selectedMatch.ruleCodes.includes(finding.ruleCode),
+      )
+      return { ...current, findings: remaining, totalFindings: remaining.length }
+    })
     setAuditRestoredFromSubmission(false)
     setSaveDraftError(null)
     setSaveDraftMessage(null)
-    setGuidanceCopyFeedback({ groupId: group.id, message: 'Suggestion applied to the editor. Run Preflight Audit again before saving or submitting.', isError: false })
+    setRefineMessage(null)
+    setGuidanceCopyFeedback({ groupId: feedbackId, message: 'Suggestion applied to the editor. Only this phrase was cleared from the active list; run Preflight Audit again before saving.', isError: false })
   }
 
-  const handleOpenOverrideRequest = (group: ConsolidatedFinding) => {
-    if (!editingSubmissionId || !authSession || authSession.user.role !== 'CREATOR') {
-      setGuidanceCopyFeedback({ groupId: group.id, message: 'Save this campaign as a draft first. The override request will be attached to that campaign discussion.', isError: true })
+  const handleOpenOverrideRequest = (group: ConsolidatedFinding, match?: FindingMatch) => {
+    if (hasOverrideRequest(group, match)) {
+      setGuidanceCopyFeedback({ groupId: occurrenceFeedbackId(group, match), message: 'An override request for this phrase is already saved in the campaign discussion.', isError: false })
       return
     }
-    setOverrideTarget({ groupId: group.id, title: group.title, ruleCodes: group.ruleCodes, evidences: group.evidences })
+    if (!editingSubmissionId || !authSession || authSession.user.role !== 'CREATOR') {
+      setGuidanceCopyFeedback({ groupId: occurrenceFeedbackId(group, match), message: 'Save this campaign as a draft first. The override request will be attached to that campaign discussion.', isError: true })
+      return
+    }
+    const evidence = match?.evidence ? [match.evidence] : group.evidences
+    const ruleCodes = match?.ruleCodes ?? group.ruleCodes
+    setOverrideTarget({
+      groupId: occurrenceFeedbackId(group, match),
+      title: group.title,
+      ruleCodes,
+      evidences: evidence,
+    })
     setOverrideReason('')
     setOverrideError(null)
   }
@@ -894,7 +948,6 @@ export function App() {
   const handleSubmitOverrideRequest = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!overrideTarget || !editingSubmissionId || !authSession) return
-
     const justification = overrideReason.trim()
     if (justification.length < 15 || justification.length > 2000) {
       setOverrideError('Provide a justification of 15–2,000 characters.')
@@ -921,10 +974,7 @@ export function App() {
         comment?: SubmissionDetail['comments'][number]
         error?: string
       } | null
-      if (!response.ok || !data?.comment) {
-        throw new Error(data?.error ?? `Unable to submit override request (HTTP ${response.status}).`)
-      }
-
+      if (!response.ok || !data?.comment) throw new Error(data?.error ?? `Unable to submit override request (HTTP ${response.status}).`)
       setSubmissionComments((previous) => [...previous, data.comment!])
       setGuidanceCopyFeedback({
         groupId: overrideTarget.groupId,
@@ -939,6 +989,48 @@ export function App() {
       setOverrideBusy(false)
     }
   }
+
+  const handleRefineCopy = async () => {
+    if (refineBusy || isAuditing || !content.trim()) return
+    if (!authSession || authSession.user.role !== 'CREATOR') {
+      setRefineError('Sign in with a Creator account to refine campaign copy.')
+      setRefineMessage(null)
+      return
+    }
+    setRefineBusy(true)
+    setRefineError(null)
+    setRefineMessage(null)
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/audit/refine`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
+        body: JSON.stringify({ brandProfileId: BRAND_PROFILE_ID, content }),
+      })
+      const data = await response.json().catch(() => null) as { refinedContent?: string; error?: string } | null
+      if (!response.ok || typeof data?.refinedContent !== 'string' || !data.refinedContent.trim()) {
+        throw new Error(data?.error ?? `Could not refine copy (HTTP ${response.status}).`)
+      }
+      if (data.refinedContent.trim() === content.trim()) {
+        setRefineMessage('No text changes were suggested. Run Preflight Audit to verify the current copy.')
+        return
+      }
+      setContent(data.refinedContent.trim())
+      setAuditResult(null)
+      setAuditedContent(null)
+      setAuditError(null)
+      setAuditRestoredFromSubmission(false)
+      setGuidanceCopyFeedback(null)
+      setSaveDraftError(null)
+      setSaveDraftMessage(null)
+      setRefineMessage('Copy refined. Review the wording, then run Preflight Audit before saving or submitting.')
+    } catch (err) {
+      setRefineError(err instanceof Error ? err.message : 'Could not refine copy.')
+    } finally {
+      setRefineBusy(false)
+    }
+  }
+
+
 
   const handleLogin = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -1517,7 +1609,8 @@ export function App() {
               <div className="bf-campaign-bundle-actions">
                 <button
                   type="button"
-                  className="bf-btn-secondary"
+                  className={activeView === 'image' ? 'bf-btn-secondary' : 'bf-btn-primary bf-campaign-open-image-button'}
+                  title={activeView === 'image' ? 'Return to campaign copy' : 'Audit the campaign image and alt text'}
                   onClick={() => setActiveView(activeView === 'image' ? 'workspace' : 'image')}
                 >
                   {activeView === 'image' ? '← Return to Text Audit' : 'Open Image Audit →'}
@@ -1635,6 +1728,7 @@ export function App() {
                         disabled={
                           saveDraftBusy ||
                           isAuditing ||
+                          refineBusy ||
                           !content.trim() ||
                           !auditResult ||
                           auditedContent !== content ||
@@ -1645,13 +1739,26 @@ export function App() {
                       </button>
 
                       <button
+                        type="button"
+                        className="bf-btn-secondary bf-refine-copy-button"
+                        disabled={refineBusy || isAuditing || !content.trim() || authSession?.user.role !== 'CREATOR'}
+                        onClick={() => void handleRefineCopy()}
+                        title="Ask Gemini to refine the copy against the active brand rules and approved facts. A fresh audit is still required."
+                      >
+                        {refineBusy ? 'Refining copy…' : 'Refine copy'}
+                      </button>
+
+                      <button
                         type="submit"
                         className="bf-btn-primary"
-                        disabled={isAuditing || !content.trim()}
+                        disabled={isAuditing || refineBusy || !content.trim()}
                       >
                         {isAuditing ? 'Running audit...' : 'Run Preflight Audit'}
                       </button>
                     </div>
+
+                    {refineError && <p className="bf-refine-copy-note error" role="alert">{refineError}</p>}
+                    {refineMessage && <p className="bf-refine-copy-note" role="status">{refineMessage}</p>}
 
                     {saveDraftError && (
                       <p className="bf-save-feedback error" role="alert">
@@ -2108,6 +2215,13 @@ export function App() {
                           </div>
                         )}
 
+                        {guidanceCopyFeedback?.message.startsWith('Suggestion applied') && (
+                          <div className="bf-suggestion-applied-note" role="status">
+                            <span className="bf-suggestion-applied-mark" aria-hidden="true">✓</span>
+                            <span>{guidanceCopyFeedback.message} The finding was removed from active issues. Run Preflight Audit again before saving.</span>
+                          </div>
+                        )}
+
                         {filteredFindings.length === 0 ? (
                           <div className="bf-empty-state">
                             <strong style={{ color: 'var(--text-heading)' }}>
@@ -2124,99 +2238,69 @@ export function App() {
                         ) : (
                           <div className="bf-findings-list">
                             {filteredFindings.map((group) => (
-                              <div
-                                key={group.id}
-                                className={`bf-finding-card severity-${group.severity}`}
-                              >
-                                  <div className="bf-finding-meta">
-                                    <div className="bf-finding-tags">
-                                      {group.ruleCodes.map((code) => (
-                                        <span key={code} className="bf-rule-tag">
-                                          {code}
-                                        </span>
-                                      ))}
-                                      <span
-                                        className={`bf-severity-indicator bf-severity-${group.severity}`}
-                                      >
-                                        {group.category.charAt(0) +
-                                          group.category.slice(1).toLowerCase()}{' '}
-                                        •{' '}
-                                        {group.severity.charAt(0) +
-                                          group.severity.slice(1).toLowerCase()}
-                                      </span>
-                                    </div>
-
-                                    <span className="bf-source-meta">
-                                      {group.mergedCount > 1
-                                        ? `Consolidated (${group.mergedCount} checks)`
-                                        : group.confidences[0]}
+                              <article key={group.id} className={`bf-finding-card severity-${group.severity}`}>
+                                <div className="bf-finding-meta">
+                                  <div className="bf-finding-tags">
+                                    {group.ruleCodes.map((code) => <span key={code} className="bf-rule-tag">{code}</span>)}
+                                    <span className={`bf-severity-indicator bf-severity-${group.severity}`}>
+                                      {group.category.charAt(0) + group.category.slice(1).toLowerCase()} • {group.severity.charAt(0) + group.severity.slice(1).toLowerCase()}
                                     </span>
                                   </div>
+                                  <span className="bf-source-meta">
+                                    {group.matches.length > 1 ? `${group.matches.length} flagged phrases` : group.matches[0]?.confidence ?? group.confidences[0]}
+                                  </span>
+                                </div>
 
-                                  <h3 className="bf-finding-title">{group.title}</h3>
-                                  <p className="bf-finding-desc">{group.message}</p>
+                                <h3 className="bf-finding-title">{group.title}</h3>
+                                <p className="bf-finding-desc">{group.message}</p>
 
-                                  <div className="bf-evidence-container">
-                                    <div className="bf-evidence-row">
-                                      <span className="bf-evidence-label">
-                                        {group.evidences.length > 1
-                                          ? 'Matched evidence:'
-                                          : 'Flagged text:'}
-                                      </span>
-                                      <div className="bf-evidence-chips">
-                                        {group.evidences.map((ev) => (
-                                          <button
-                                            key={ev}
-                                            type="button"
-                                            className="bf-evidence-chip"
-                                            title="Click to highlight in editor"
-                                            onClick={() => handleFocusEvidence(ev)}
-                                          >
-                                            &ldquo;{ev}&rdquo;
+                                <div className="bf-finding-occurrences">
+                                  {group.matches.map((match) => {
+                                    const feedbackId = occurrenceFeedbackId(group, match)
+                                    const overrideRequested = hasOverrideRequest(group, match)
+                                    const feedback = guidanceCopyFeedback?.groupId === feedbackId ? guidanceCopyFeedback : null
+                                    return (
+                                      <section className="bf-finding-occurrence" key={`${group.id}-${match.evidence}`}>
+                                        <div className="bf-evidence-container">
+                                          <div className="bf-evidence-row">
+                                            <span className="bf-evidence-label">Flagged text:</span>
+                                            <div className="bf-evidence-chips">
+                                              <button type="button" className="bf-evidence-chip" title="Highlight this exact phrase in the editor" onClick={() => handleFocusEvidence(match.evidence)}>
+                                                &ldquo;{match.evidence}&rdquo;
+                                              </button>
+                                              <span className="bf-source-meta">{match.confidence}</span>
+                                            </div>
+                                          </div>
+                                          <div className="bf-evidence-row">
+                                            <span className="bf-evidence-label">Guidance:</span>
+                                            <span style={{ flex: 1, color: 'var(--text-heading)' }}>{match.suggestion || group.suggestion}</span>
+                                          </div>
+                                        </div>
+
+                                        <div className="bf-finding-actions">
+                                          <button type="button" className="bf-btn-action primary" onClick={() => handleFocusEvidence(match.evidence)}>Locate in editor</button>
+                                          {match.originalSpan?.trim() && match.suggestedSpan?.trim() && (
+                                            <button type="button" className="bf-btn-action primary" disabled={auditedContent !== content || refineBusy} title={auditedContent !== content ? 'Run Preflight Audit again before applying this suggestion.' : 'Replace this exact flagged phrase in the editor.'} onClick={() => handleApplySuggestion(group, match)}>Apply suggestion</button>
+                                          )}
+                                          <button type="button" className="bf-btn-action" onClick={() => void handleCopyGuidance(group, match)}>
+                                            {feedback?.message.startsWith('Guidance copied') && !feedback.isError ? 'Guidance copied' : 'Copy guidance'}
                                           </button>
-                                        ))}
-                                      </div>
-                                    </div>
-
-                                    <div className="bf-evidence-row">
-                                      <span className="bf-evidence-label">Guidance:</span>
-                                      <span style={{ flex: 1, color: 'var(--text-heading)' }}>
-                                        {group.suggestion}
-                                      </span>
-                                    </div>
-                                  </div>
-
-                                  <div className="bf-finding-actions">
-                                    <button type="button" className="bf-btn-action primary" onClick={() => handleFocusEvidence(group.evidences[0] ?? '')}>
-                                      Locate in editor
-                                    </button>
-                                    {group.originalSpan?.trim() && group.suggestedSpan?.trim() && (
-                                      <button
-                                        type="button"
-                                        className="bf-btn-action primary"
-                                        disabled={auditedContent !== content}
-                                        title={auditedContent !== content ? 'Run Preflight Audit again before applying this suggestion.' : 'Replace the exact flagged phrase in the editor.'}
-                                        onClick={() => handleApplySuggestion(group)}
-                                      >Apply suggestion</button>
-                                    )}
-                                    <button type="button" className="bf-btn-action" onClick={() => void handleCopyGuidance(group)}>
-                                      {guidanceCopyFeedback?.groupId === group.id && guidanceCopyFeedback.message.startsWith('Guidance copied') && !guidanceCopyFeedback.isError ? 'Guidance copied' : 'Copy guidance'}
-                                    </button>
-                                    <button type="button" className="bf-btn-action" onClick={() => handleOpenOverrideRequest(group)} title={!editingSubmissionId ? 'Save this campaign as a draft first.' : 'Ask a reviewer or manager to consider an exception.'}>
-                                      Request override
-                                    </button>
-                                  </div>
-                                  {guidanceCopyFeedback?.groupId === group.id && (
-                                    <p
-                                      className={`bf-guidance-copy-feedback${
-                                        guidanceCopyFeedback.isError ? ' error' : ''
-                                      }`}
-                                      role={guidanceCopyFeedback.isError ? 'alert' : 'status'}
-                                    >
-                                      {guidanceCopyFeedback.message}
-                                    </p>
-                                  )}
-                              </div>
+                                          {overrideRequested ? (
+                                            <span className="bf-override-request-status" role="status">Override requested</span>
+                                          ) : (
+                                            <button type="button" className="bf-btn-action" onClick={() => handleOpenOverrideRequest(group, match)} title={!editingSubmissionId ? 'Save this campaign as a draft first.' : 'Ask a reviewer or manager to consider an exception for this phrase.'}>Request override</button>
+                                          )}
+                                        </div>
+                                        {feedback && (
+                                          <p className={`bf-guidance-copy-feedback${feedback.isError ? ' error' : ''}`} role={feedback.isError ? 'alert' : 'status'}>
+                                            {feedback.message}
+                                          </p>
+                                        )}
+                                      </section>
+                                    )
+                                  })}
+                                </div>
+                              </article>
                             ))}
                           </div>
                         )}
@@ -2293,6 +2377,7 @@ export function App() {
             token={authSession.token}
             onOpenReviewQueue={() => setActiveView('review')}
             onOpenRulebook={() => setActiveView('rulebook')}
+            onOpenSubmission={handleManagerOpenSubmission}
           />
         ) : activeView === 'submissions' && authSession.user.role === 'CREATOR' ? (
           <SavedSubmissionsPanel
@@ -2305,6 +2390,8 @@ export function App() {
           <ReviewQueuePanel
             apiBaseUrl={API_BASE_URL}
             token={authSession.token}
+            initialSubmissionId={pendingManagerSubmissionId}
+            onInitialSelectionHandled={handleInitialReviewSelectionHandled}
           />
         )}
       </main>
