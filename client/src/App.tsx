@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type SubmitEvent, type ReactNode } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
+import BrandFlightLogo from './BrandFlightLogo'
+import ImageTextContrastReport from './ImageTextContrastReport'
 import type { ImageAuditData as ImageAuditApiResponse } from './types/imageAudit'
 import RulebookPanel, { type BrandProfileData } from './RulebookPanel'
 import SavedSubmissionsPanel, { type SubmissionDetail } from './SavedSubmissionsPanel'
@@ -119,6 +121,7 @@ function imageAuditSnapshot(data: ImageAuditApiResponse | null | undefined) {
       dominantColors: data.image.dominantColors,
       approvedColors: data.image.approvedColors,
       colorAnalysis: data.image.colorAnalysis,
+      textContrastAnalysis: data.image.textContrastAnalysis ?? null,
       altTextLength: data.image.altTextLength,
     },
     totalFindings: data.totalFindings,
@@ -348,45 +351,6 @@ function renderHighlightedText(text: string, evidences: string[]): ReactNode {
     }
     return <span key={idx}>{part}</span>
   })
-}
-
-/* BrandFlight's custom flight-path mark: content streams converge on a checked route. */
-function BrandFlightMark(): ReactNode {
-  return (
-    <svg
-      className="bf-logo-symbol"
-      width="32"
-      height="32"
-      viewBox="0 0 32 32"
-      fill="none"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path
-        d="M5 22.5h5.2c1.7 0 2.9-.6 4.1-1.8l5.7-5.7c1.1-1.1 2.2-1.7 3.9-1.7H27"
-        stroke="currentColor"
-        strokeWidth="2.25"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M20.5 7.5H27v6.5"
-        stroke="#F8FAFC"
-        strokeWidth="2.25"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M5.5 15.5h4.1c1.4 0 2.5-.5 3.5-1.5l2.1-2.1"
-        stroke="#F8FAFC"
-        strokeWidth="2.25"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        opacity="0.88"
-      />
-      <circle cx="5.2" cy="22.5" r="1.65" fill="currentColor" />
-    </svg>
-  )
 }
 
 export function App() {
@@ -1169,7 +1133,7 @@ export function App() {
     return (
       <div className="bf-auth-screen">
         <div className="bf-auth-card">
-          <span className="bf-auth-kicker">BRANDFLIGHT</span>
+          <BrandFlightLogo variant="auth" />
           <h1>Checking session</h1>
           <p>Verifying your sign-in…</p>
         </div>
@@ -1181,8 +1145,8 @@ export function App() {
     return (
       <div className="bf-auth-screen">
         <form className="bf-auth-card" onSubmit={handleLogin}>
-          <span className="bf-auth-kicker">CONTENT PREFLIGHT</span>
-          <h1 className="bf-auth-title">Welcome to BrandFlight</h1>
+          <BrandFlightLogo variant="auth" />
+          <h1 className="bf-auth-title">Welcome back</h1>
           <p className="bf-auth-subtitle">
             Sign in to review campaign content against your brand rules.
           </p>
@@ -1534,7 +1498,7 @@ export function App() {
     return (
       <div className="bf-auth-screen">
         <div className="bf-auth-card">
-          <span className="bf-auth-kicker">BRANDFLIGHT</span>
+          <BrandFlightLogo variant="auth" />
           <h1 className="bf-auth-title">Page not found</h1>
           <p className="bf-auth-subtitle">
             This BrandFlight URL does not match a known feature.
@@ -1558,15 +1522,7 @@ export function App() {
         <div className="bf-header-container">
           <div className="bf-header-topline">
             <div className="bf-header-left">
-              <div className="bf-brand-lockup" aria-label="BrandFlight Content Preflight">
-                <span className="bf-logo-mark">
-                  <BrandFlightMark />
-                </span>
-                <span className="bf-brand-copy">
-                  <span className="bf-wordmark">BrandFlight</span>
-                  <span className="bf-product-Descriptor">Content Preflight</span>
-                </span>
-              </div>
+              <BrandFlightLogo variant="header" />
             </div>
 
             <div className="bf-header-right">
@@ -2172,10 +2128,10 @@ export function App() {
                           </div>
                           <div className="bf-image-audit-metric">
                             <span>Alt-text check</span>
-                            <strong className={imageAuditResult.findings.some((finding) => finding.category === 'ACCESSIBILITY') ? 'needs-review' : 'passed'}>
-                              {imageAuditResult.findings.some((finding) => finding.category === 'ACCESSIBILITY') ? 'Needs review' : 'Basic checks passed'}
+                            <strong className={imageAuditResult.findings.some((finding) => finding.title.toLowerCase().includes('alt text')) ? 'needs-review' : 'passed'}>
+                              {imageAuditResult.findings.some((finding) => finding.title.toLowerCase().includes('alt text')) ? 'Needs review' : 'Basic checks passed'}
                             </strong>
-                            <small>Presence, configured length, and generic-label checks; review meaning in context.</small>
+                            <small>Presence, configured length and generic-label checks; contrast results are reported separately below.</small>
                           </div>
                           <div className="bf-image-audit-metric">
                             <span>Findings</span>
@@ -2209,6 +2165,8 @@ export function App() {
                             {imageAuditResult.logoVerification.suggestions.length > 0 && <ul className="bf-logo-verification-list suggestions">{imageAuditResult.logoVerification.suggestions.map((item, index) => <li key={`logo-suggestion-${index}`}>{item}</li>)}</ul>}
                           </section>
                         )}
+
+                        <ImageTextContrastReport analysis={imageAuditResult.image.textContrastAnalysis} />
 
                         <div className="bf-field">
                           <span className="bf-label">Dominant colors compared with the approved palette</span>
@@ -2489,7 +2447,7 @@ export function App() {
                                 ? 'No compliance issues detected'
                                 : 'No findings in this filter'}
                             </strong>
-                            <p style={{ marginTop: '4px', fontSize: '13px' }}>
+                            <p style={{ marginTop: '4px', fontSize: '14.5px' }}>
                               {consolidatedFindings.length === 0
                                 ? 'This draft aligns with the configured brand rules and approved product facts.'
                                 : 'Select another filter tab above to view remaining findings.'}

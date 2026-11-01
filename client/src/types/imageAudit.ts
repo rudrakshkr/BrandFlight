@@ -25,6 +25,7 @@ export interface ImageAuditData {
       distance: number | null
       matchesPalette: boolean
     }>
+    textContrastAnalysis?: ImageTextContrastAnalysis
     altTextLength: number
   }
   totalFindings: number
@@ -53,4 +54,30 @@ export interface LogoVerification {
     expectedWordmark: string | null
     isRequired: boolean
   } | null
+}
+
+export interface ImageTextContrastRegion {
+  text: string
+  role: 'BODY_TEXT' | 'HEADING' | 'CTA_TEXT' | 'CAPTION' | 'UI_ELEMENT' | 'UNKNOWN'
+  foregroundHex: string
+  backgroundHex: string
+  backgroundType: 'SOLID' | 'VARIABLE' | 'TRANSPARENT' | 'UNKNOWN' | 'PHOTO' | 'GRADIENT' | 'TEXTURED'
+  textSize: 'NORMAL' | 'LARGE' | 'UNKNOWN'
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW'
+  location: string
+  note: string
+  bounds?: { left: number; top: number; right: number; bottom: number } | null
+  contrastRatio: number | null
+  targetRatio: number
+  evaluation: 'PIXEL_PASS' | 'PIXEL_FAIL' | 'MANUAL_REVIEW' | 'ESTIMATED_PASS' | 'ESTIMATED_FAIL'
+  recommendedForeground: string | null
+  measurement?: 'PIXEL_SAMPLE' | 'MANUAL_REVIEW'
+  measurementNote?: string
+}
+
+export interface ImageTextContrastAnalysis {
+  status: 'ANALYZED' | 'NO_TEXT_DETECTED' | 'NEEDS_REVIEW' | 'UNAVAILABLE'
+  standardsConfigured: boolean
+  summary: string
+  regions: ImageTextContrastRegion[]
 }

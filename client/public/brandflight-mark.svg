@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" role="img" aria-labelledby="brandflight-mark-title">
+  <title id="brandflight-mark-title">BrandFlight</title>
+  <rect x="1" y="1" width="46" height="46" rx="13" fill="#EAF5F1" />
+  <path d="M7.7 28.5 38.3 9.2c1.2-.8 2.7.4 2.1 1.7L28.3 38.6c-.6 1.3-2.4 1.2-2.8-.1l-3-9.3-9.4-3c-1.3-.4-1.5-2.3-.2-3.1Z" fill="#115E59" />
+  <path d="m22.5 29.2 17-18.8" stroke="#F4FBF8" stroke-width="2.5" stroke-linecap="round" />
+  <path d="M8.1 15.8h7.1M5.2 21.9h6.2" stroke="#75BFB1" stroke-width="2.2" stroke-linecap="round" />
+  <circle cx="7.8" cy="29.4" r="1.5" fill="#75BFB1" />
+</svg>

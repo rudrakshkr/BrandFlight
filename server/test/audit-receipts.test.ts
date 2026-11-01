@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   auditConfigHash,
   createAuditReceiptId,
+  IMAGE_AUDIT_ALGORITHM_VERSION,
   imageAuditInputHash,
   sha256Text,
   type AuditBrandConfiguration,
@@ -17,7 +18,18 @@ const brand: AuditBrandConfiguration = {
   ],
   facts: [{ factCode: "FACT-01", claim: "Plans start at 499 per month.", sourceLabel: "Demo facts", sourceUrl: null }],
   assets: [],
+  accessibilityPairs: [
+    { role: "BODY_TEXT", foreground: "#17262A", background: "#FFFFFF" },
+    { role: "HEADING", foreground: "#115E59", background: "#EAF5F1" },
+    { role: "CTA_TEXT", foreground: "#FFFFFF", background: "#115E59" },
+    { role: "CAPTION", foreground: "#354442", background: "#FFFFFF" },
+    { role: "UI_ELEMENT", foreground: "#115E59", background: "#FFFFFF" },
+  ],
 };
+
+test("image audit receipts use the pixel-sampling algorithm version", () => {
+  assert.equal(IMAGE_AUDIT_ALGORITHM_VERSION, "image-audit-v5-pixel-text-contrast");
+});
 
 test("text hashes are stable and sensitive to input changes", () => {
   assert.equal(sha256Text("copy"), sha256Text("copy"));
@@ -48,4 +60,16 @@ test("image input hash binds the image asset and trimmed alt text", () => {
   assert.equal(imageAuditInputHash(asset, " Banner alt "), imageAuditInputHash(asset, "Banner alt"));
   assert.notEqual(imageAuditInputHash(asset, "Banner alt"), imageAuditInputHash(asset, "Different alt"));
   assert.notEqual(imageAuditInputHash(asset, "Banner alt"), imageAuditInputHash({ ...asset, publicId: "test/other" }, "Banner alt"));
+});
+
+test("image config hash includes saved accessibility role pairs but text hash excludes them", () => {
+  const pairs = brand.accessibilityPairs as Array<{ role: string; foreground: string; background: string }>;
+  const changedPairs = {
+    ...brand,
+    accessibilityPairs: pairs.map((pair) =>
+      pair.role === "CTA_TEXT" ? { ...pair, foreground: "#F0F0F0" } : pair,
+    ),
+  };
+  assert.equal(auditConfigHash(brand, "TEXT"), auditConfigHash(changedPairs, "TEXT"));
+  assert.notEqual(auditConfigHash(brand, "IMAGE"), auditConfigHash(changedPairs, "IMAGE"));
 });

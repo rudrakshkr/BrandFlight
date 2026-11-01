@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
+import BrandContrastAnalyzer from './BrandContrastAnalyzer'
+import BrandAccessibilityStandards from './BrandAccessibilityStandards'
+import { ACCESSIBILITY_ROLE_CONFIG, DEFAULT_ACCESSIBILITY_PAIRS, normalizeAccessibilityPairs, type AccessibilityColorPair } from './lib/accessibilityStandards'
+import { contrastRatio, isHexColor } from './lib/wcagContrast'
 
 export type RuleCategory =
   | 'TONE'
@@ -43,6 +47,7 @@ export interface BrandProfileData {
   name: string
   description: string | null
   brandColors: string[]
+  accessibilityPairs: AccessibilityColorPair[] | null
   rules: RulebookRule[]
   facts: ApprovedFact[]
   assets: ApprovedBrandAsset[]
@@ -146,6 +151,7 @@ export default function RulebookPanel({
   const [brandName, setBrandName] = useState('')
   const [description, setDescription] = useState('')
   const [colorsText, setColorsText] = useState('')
+  const [accessibilityPairs, setAccessibilityPairs] = useState<AccessibilityColorPair[]>(DEFAULT_ACCESSIBILITY_PAIRS)
   const [logoFile, setLogoFile] = useState<File | null>(null)
   const [logoWordmark, setLogoWordmark] = useState('')
   const [logoDescription, setLogoDescription] = useState('')
@@ -178,6 +184,7 @@ export default function RulebookPanel({
       setBrandName(result.name)
       setDescription(result.description ?? '')
       setColorsText(result.brandColors.join(', '))
+      setAccessibilityPairs(normalizeAccessibilityPairs(result.accessibilityPairs))
       const primaryLogo = (result.assets ?? []).find((asset) => asset.assetType === 'PRIMARY_LOGO')
       setLogoWordmark(primaryLogo?.expectedWordmark ?? '')
       setLogoDescription(primaryLogo?.description ?? '')
@@ -217,6 +224,16 @@ export default function RulebookPanel({
     setNotice('')
 
     try {
+      const invalidRole = ACCESSIBILITY_ROLE_CONFIG.find((config) => {
+        const pair = accessibilityPairs.find((item) => item.role === config.role)
+        if (!pair || !isHexColor(pair.foreground) || !isHexColor(pair.background)) return true
+        const ratio = contrastRatio(pair.foreground, pair.background)
+        return ratio === null || ratio + 1e-9 < config.targetRatio
+      })
+      if (invalidRole) {
+        throw new Error(`${invalidRole.label} colours must be valid six-digit hex values and meet the ${invalidRole.targetRatio.toFixed(1)}:1 target before saving.`)
+      }
+
       const brandColors = colorsText
         .split(/[,\n]/)
         .map((color) => color.trim())
@@ -228,6 +245,7 @@ export default function RulebookPanel({
           name: brandName.trim(),
           description: description.trim() || null,
           brandColors,
+          accessibilityPairs,
         }),
       })
 
@@ -565,7 +583,7 @@ export default function RulebookPanel({
                   </div>
                 </div>
 
-                <form className="bf-rulebook-form" onSubmit={handleSaveBrand}>
+                <form id="bf-brand-profile-form" className="bf-rulebook-form" onSubmit={handleSaveBrand}>
                   <div className="bf-rulebook-form-grid">
                     <div className="bf-field">
                       <label className="bf-label" htmlFor="bf-brand-name">
@@ -621,12 +639,15 @@ export default function RulebookPanel({
                     ))}
                   </div>
 
-                  <div className="bf-editor-actions">
-                    <button className="bf-btn-primary" type="submit" disabled={isBusy}>
-                      Save Brand Profile
-                    </button>
-                  </div>
                 </form>
+
+                <BrandContrastAnalyzer key={brand.brandColors.join('|')} colors={brand.brandColors} />
+                <BrandAccessibilityStandards value={accessibilityPairs} onChange={setAccessibilityPairs} />
+                <div className="bf-editor-actions bf-accessibility-save-actions">
+                  <button className="bf-btn-primary" type="submit" form="bf-brand-profile-form" disabled={isBusy}>
+                    {isBusy ? 'Saving…' : 'Save Brand Profile & Accessibility Standards'}
+                  </button>
+                </div>
               </section>
 
               <section className="bf-rulebook-section bf-brand-assets-section">

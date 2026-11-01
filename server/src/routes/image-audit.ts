@@ -5,7 +5,10 @@ import sharp from "sharp";
 import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { auditConfigHash, createAuditReceiptId, imageAuditInputHash } from "../lib/audit-receipts.js";
-import { compareBrandLogo, type LogoVisualComparison } from "../lib/gemini.js";
+import { analyzeImageTextContrast, compareBrandLogo, type LogoVisualComparison } from "../lib/gemini.js";
+import { buildImageTextContrastReport, type ImageTextContrastReport } from "../lib/image-text-contrast.js";
+import { parseAccessibilityColorPairs } from "../lib/wcag-contrast.js";
+import { sampleAllImageTextRegions } from "../lib/image-text-pixels.js";
 import { requireAuth, requireRoles } from "../middleware/auth.js";
 
 export const imageAuditRouter = Router();
@@ -279,6 +282,9 @@ async function processImageAudit(req: Request, res: Response) {
   const accessibilityRuleCode =
     brand.rules.find((rule) => rule.category === "ACCESSIBILITY")?.ruleCode ??
     "ACCESSIBILITY-01";
+  const textContrastRuleCode =
+    brand.rules.find((rule) => rule.ruleCode === "ACCESSIBILITY-02")?.ruleCode ??
+    "ACCESSIBILITY-02";
 
   const palette = approvedColors
     .map((color) => ({ color, rgb: hexToRgb(color) }))
@@ -389,6 +395,93 @@ async function processImageAudit(req: Request, res: Response) {
     });
   }
 
+  const accessibilityPairs = parseAccessibilityColorPairs(brand.accessibilityPairs);
+  let textContrastAnalysis: ImageTextContrastReport;
+  try {
+    const visionResult = await analyzeImageTextContrast(
+      req.file.buffer,
+      metadata.format === "jpeg" ? "image/jpeg" : `image/${metadata.format}`,
+    );
+    const pixelImage = await sharp(req.file.buffer, {
+      limitInputPixels: 40_000_000,
+    })
+      .rotate()
+      .toColourspace("srgb")
+      .resize({ width: 2000, height: 2000, fit: "inside", withoutEnlargement: true })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const pixelMeasurements = sampleAllImageTextRegions(
+      {
+        data: pixelImage.data,
+        width: pixelImage.info.width,
+        height: pixelImage.info.height,
+        channels: pixelImage.info.channels,
+      },
+      visionResult.regions,
+    );
+    textContrastAnalysis = buildImageTextContrastReport(visionResult, accessibilityPairs, pixelMeasurements);
+    if (textContrastAnalysis.status === "NEEDS_REVIEW" && textContrastAnalysis.regions.length === 0) {
+      findings.push({
+        category: "ACCESSIBILITY",
+        severity: "WARNING",
+        title: "Visible text needs manual contrast review",
+        message: "The vision model indicated that text may be present but could not return a usable region for deterministic pixel sampling.",
+        evidence: textContrastAnalysis.summary,
+        suggestion: "Inspect the exported artwork and measure the actual foreground and adjacent background colours. Add a solid backing surface if text overlaps a photograph or gradient.",
+        ruleCode: textContrastRuleCode,
+        confidence: "Manual review required",
+      });
+    }
+
+    for (const region of textContrastAnalysis.regions) {
+      if (region.evaluation === "PIXEL_PASS") continue;
+      const measuredFail = region.evaluation === "PIXEL_FAIL";
+      const roleLabel = region.role === "UNKNOWN" ? "unclassified text" : region.role.toLowerCase().replace(/_/g, " ");
+      findings.push({
+        category: "ACCESSIBILITY",
+        severity: "WARNING",
+        title: measuredFail ? "Measured text contrast is below target" : "Text contrast needs manual review",
+        message: measuredFail
+          ? `Pixel sampling measured ${region.contrastRatio?.toFixed(2) ?? "unknown"}:1 for ${roleLabel}, below the ${region.targetRatio.toFixed(1)}:1 screening target. The text region was AI-located; colour samples came from the uploaded image pixels.`
+          : `A reliable pixel measurement could not be made for ${roleLabel} in this region (${region.backgroundType.toLowerCase()} local background, ${region.confidence.toLowerCase()} detection confidence).`,
+        evidence: [
+          region.text ? `Visible text: "${region.text}"` : "Visible text was detected.",
+          `Region: ${region.location || "unspecified"}`,
+          `Pixel-sampled foreground: ${region.foregroundHex || "unavailable"}`,
+          `Pixel-sampled background: ${region.backgroundHex || "not measurable"}`,
+          region.contrastRatio === null ? "Contrast ratio: not calculated" : `Pixel-sampled contrast: ${region.contrastRatio.toFixed(2)}:1`,
+          region.measurementNote,
+        ].join("; "),
+        suggestion: measuredFail
+          ? region.recommendedForeground
+            ? `Try ${region.recommendedForeground} as the text colour on this sampled solid background. Recheck the final exported image and intended typography before publishing.`
+            : "Increase contrast by changing the text colour or placing the text on a solid background. Recheck the final exported image manually."
+          : `${region.measurementNote} Inspect this text in the source design and measure the actual text and adjacent background colours before publishing.`,
+        ruleCode: textContrastRuleCode,
+        confidence: measuredFail ? "Pixel-sampled · deterministic" : "Manual review required",
+      });
+    }
+  } catch (contrastError) {
+    const detail = contrastError instanceof Error ? contrastError.message : "Unknown vision analysis error";
+    textContrastAnalysis = {
+      status: "UNAVAILABLE",
+      standardsConfigured: Boolean(accessibilityPairs?.length),
+      summary: "Text-region location or pixel sampling could not be completed. The image was retained for the other audit checks; a reviewer should inspect visible text contrast manually.",
+      regions: [],
+    };
+    findings.push({
+      category: "ACCESSIBILITY",
+      severity: "WARNING",
+      title: "Text contrast screening unavailable",
+      message: "BrandFlight could not complete text-region location and deterministic pixel sampling for this image.",
+      evidence: detail.slice(0, 300),
+      suggestion: "Retry the image audit. Until pixel sampling succeeds, manually inspect text against its actual background using a trusted contrast measurement workflow.",
+      ruleCode: textContrastRuleCode,
+      confidence: "Manual review required",
+    });
+  }
+
   const configuredLogo = (brand.assets?.[0] ?? null) as ApprovedLogo | null;
   let logoVerification: ReturnType<typeof notConfiguredLogoVerification> | (LogoVisualComparison & {
     required: boolean;
@@ -467,6 +560,7 @@ async function processImageAudit(req: Request, res: Response) {
       approvedColors,
       colorAnalysis,
       altTextLength: altText.length,
+      textContrastAnalysis,
     },
     totalFindings: findings.length,
     findings,

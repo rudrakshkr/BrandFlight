@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ImageAuditData } from './types/imageAudit'
+import ImageTextContrastReport from './ImageTextContrastReport'
+import CampaignChangeIntelligence from './CampaignChangeIntelligence'
+import ReleasePassportCard from './ReleasePassportCard'
 
 type Decision = 'APPROVED' | 'CHANGES_REQUESTED'
 
@@ -42,8 +45,17 @@ interface Detail extends Summary {
   imageAuditData: ImageAuditData | null
   findings: Finding[]
   comments: Comment[]
-  revisions: Array<{ id: string; version: number; createdAt: string }>
+  revisions: Array<{
+    id: string
+    version: number
+    createdAt: string
+    contentText: string
+    imageAltText: string | null
+    imageUrl: string | null
+    imagePublicId: string | null
+  }>
   imagePublicId: string | null
+  releasePassport?: { id: string; passportHash: string; issuedAt: string } | null
 }
 
 interface Props {
@@ -434,6 +446,14 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                 <pre className="bf-review-copy">{selected.contentText}</pre>
               </section>
 
+              <CampaignChangeIntelligence
+                revisions={selected.revisions}
+                currentContent={selected.contentText}
+                currentImageUrl={selected.imageUrl ?? null}
+                currentImagePublicId={selected.imagePublicId}
+                currentImageAltText={selected.imageAltText}
+              />
+
               {(selected.imageUrl || selected.imageAuditData || selected.imageName || selected.imageAltText) && (
                 <section className="bf-review-section">
                   <h3>Campaign image &amp; alt-text audit</h3>
@@ -485,6 +505,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                           {selected.imageAuditData.logoVerification.suggestions.length > 0 && <ul className="bf-logo-verification-list suggestions">{selected.imageAuditData.logoVerification.suggestions.map((item, index) => <li key={`review-logo-suggestion-${index}`}>{item}</li>)}</ul>}
                         </section>
                       )}
+                      <ImageTextContrastReport analysis={selected.imageAuditData.image.textContrastAnalysis} />
                       <p>
                         <b>Image audit findings:</b>{' '}
                         {selected.imageAuditData.totalFindings}
@@ -588,6 +609,10 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                   </article>
                 ))}
               </section>
+
+              {selected.status === 'APPROVED' && (
+                <ReleasePassportCard passport={selected.releasePassport} apiBaseUrl={apiBaseUrl} />
+              )}
 
               <section className="bf-review-section">
                 <h3>Comments &amp; activity ({selected.comments.length})</h3>

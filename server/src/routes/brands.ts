@@ -2,7 +2,9 @@ import { Router, type Request, type Response } from "express";
 import { v2 as cloudinary } from "cloudinary";
 import multer from "multer";
 import sharp from "sharp";
+import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
+import { parseAccessibilityColorPairs } from "../lib/wcag-contrast.js";
 import { requireAuth, requireRoles } from "../middleware/auth.js";
 
 export const brandsRouter = Router();
@@ -222,7 +224,7 @@ brandsRouter.get("/:brandProfileId", async (req, res) => {
   }
 });
 
-// Update brand name, description, and color palette.
+// Update brand identity, palette, and manager-defined accessible color-role standards.
 brandsRouter.patch("/:brandProfileId", async (req, res) => {
   const body: unknown = req.body;
 
@@ -234,6 +236,7 @@ brandsRouter.patch("/:brandProfileId", async (req, res) => {
     name?: string;
     description?: string | null;
     brandColors?: string[];
+    accessibilityPairs?: Prisma.InputJsonValue;
   } = {};
 
   if ("name" in body) {
@@ -258,6 +261,16 @@ brandsRouter.patch("/:brandProfileId", async (req, res) => {
       });
     }
     data.brandColors = colors;
+  }
+
+  if ("accessibilityPairs" in body) {
+    const pairs = parseAccessibilityColorPairs(body.accessibilityPairs);
+    if (!pairs) {
+      return res.status(400).json({
+        error: "Accessibility standards must contain one valid, WCAG-passing foreground/background pair for each required role.",
+      });
+    }
+    data.accessibilityPairs = pairs as unknown as Prisma.InputJsonValue;
   }
 
   if (Object.keys(data).length === 0) {

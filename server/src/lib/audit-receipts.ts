@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 
+export const IMAGE_AUDIT_ALGORITHM_VERSION = "image-audit-v5-pixel-text-contrast";
+
 export type AuditBrandConfiguration = {
   id: string;
   brandColors: string[];
@@ -16,6 +18,7 @@ export type AuditBrandConfiguration = {
     sourceLabel: string;
     sourceUrl: string | null;
   }>;
+  accessibilityPairs?: unknown;
   assets?: Array<{
     assetType: string;
     name: string;
@@ -70,13 +73,23 @@ export function auditConfigHash(
     description: asset.description,
     isRequired: asset.isRequired,
   })).sort((a, b) => a.assetType.localeCompare(b.assetType));
+  const accessibilityPairs = Array.isArray(brand.accessibilityPairs)
+    ? brand.accessibilityPairs.flatMap((value) => {
+        if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+        const pair = value as Record<string, unknown>;
+        if (typeof pair.role !== "string" || typeof pair.foreground !== "string" || typeof pair.background !== "string") return [];
+        return [{ role: pair.role, foreground: pair.foreground.toUpperCase(), background: pair.background.toUpperCase() }];
+      }).sort((a, b) => a.role.localeCompare(b.role))
+    : [];
+
   const configuration = kind === "TEXT"
     ? { kind, brandProfileId: brand.id, rules, facts }
     : {
         kind,
-        algorithmVersion: "dominant-color-comparison-v2",
+        algorithmVersion: IMAGE_AUDIT_ALGORITHM_VERSION,
         brandProfileId: brand.id,
         brandColors: [...brand.brandColors].map((color) => color.toUpperCase()).sort(),
+        accessibilityPairs,
         rules: rules.filter((rule) => rule.category === "VISUAL" || rule.category === "ACCESSIBILITY"),
         assets: approvedAssets,
       };

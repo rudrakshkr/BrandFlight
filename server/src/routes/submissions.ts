@@ -3,6 +3,7 @@ import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { auditConfigHash, imageAuditInputHash, sha256Text } from "../lib/audit-receipts.js";
 import { validateReviewDecision } from "../lib/review-validation.js";
+import { canonicalJson, createReleasePassport, verifyReleasePassportHash, type ReleasePassportSnapshot } from "../lib/release-passport.js";
 import {
   requireAuth,
   requireRoles,
@@ -238,6 +239,7 @@ const submissionDetails = {
       },
     },
   },
+  releasePassport: { select: { id: true, passportHash: true, issuedAt: true, snapshot: true } },
   comments: {
     orderBy: { createdAt: "asc" as const },
     include: {
@@ -371,10 +373,16 @@ async function validateTextAuditReceipt(
   const findings = parseFindings(validReceipt.result.findings);
   if (!findings) return null;
 
+  const semanticStatus: "completed" | "unavailable" =
+    validReceipt.result.semanticStatus === "completed"
+      ? "completed"
+      : "unavailable";
+
   return {
     receiptId: validReceipt.id,
     findings,
-    semanticStatus: validReceipt.result.semanticStatus === "completed" ? "completed" : "unavailable",
+    resultHash: sha256Text(canonicalJson(validReceipt.result)),
+    semanticStatus,
   };
 }
 
@@ -417,6 +425,7 @@ async function validateImageAuditReceipt(
     receiptId: validReceipt.id,
     value: parsed.value,
     result: validReceipt.result,
+    resultHash: sha256Text(canonicalJson(validReceipt.result)),
     imageName: image.name,
   };
 }
@@ -454,6 +463,7 @@ submissionsRouter.get("/", requireAuth, async (req, res) => {
         brandProfile: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true, email: true } },
         reviewer: { select: { id: true, name: true, email: true } },
+        releasePassport: { select: { id: true, passportHash: true, issuedAt: true } },
         _count: {
           select: { findings: true, comments: true, revisions: true },
         },
@@ -626,6 +636,134 @@ submissionsRouter.post(
   },
 );
 
+// Public, read-only verification for a release passport. Only summary metadata and hashes are exposed.
+submissionsRouter.get("/passport/:passportId/verify", async (req, res) => {
+  try {
+    const passportId = getRouteParam(req.params.passportId);
+    const passport = await prisma.releasePassport.findUnique({
+      where: { id: passportId },
+      include: {
+        submission: {
+          include: {
+            brandProfile: {
+              include: {
+                rules: { where: { isActive: true } },
+                facts: { where: { isActive: true } },
+                assets: { where: { assetType: "PRIMARY_LOGO" }, take: 1 },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!passport) return res.status(404).json({ valid: false, status: "NOT_FOUND" });
+
+    const submission = passport.submission;
+    const snapshot = passport.snapshot as unknown as ReleasePassportSnapshot;
+    const brand = submission.brandProfile;
+    const contentHash = sha256Text(submission.contentText);
+    const currentImageInputHash = submission.imageUrl && submission.imagePublicId
+      ? imageAuditInputHash(
+          { secureUrl: submission.imageUrl, publicId: submission.imagePublicId },
+          submission.imageAltText ?? "",
+        )
+      : null;
+    const textReceipt = submission.textAuditReceiptId
+      ? await prisma.auditReceipt.findUnique({ where: { id: submission.textAuditReceiptId } })
+      : null;
+    const imageReceipt = submission.imageAuditReceiptId
+      ? await prisma.auditReceipt.findUnique({ where: { id: submission.imageAuditReceiptId } })
+      : null;
+
+    const textConfigHash = auditConfigHash(brand, "TEXT");
+    const imageConfigHash = auditConfigHash(brand, "IMAGE");
+    const snapshotShapeValid = Boolean(
+      snapshot && snapshot.schemaVersion === 1 && snapshot.campaign && snapshot.audit &&
+      snapshot.audit.text && snapshot.approval,
+    );
+    const passportSecret = process.env.RELEASE_PASSPORT_SECRET || process.env.JWT_SECRET || "";
+    const passportIntegrityValid = snapshotShapeValid && passportSecret.length >= 32 &&
+      verifyReleasePassportHash(snapshot, passport.passportHash, passportSecret);
+    const textAuditValid = Boolean(
+      snapshotShapeValid && textReceipt && textReceipt.kind === "TEXT" &&
+      textReceipt.userId === submission.creatorId &&
+      textReceipt.brandProfileId === submission.brandProfileId &&
+      textReceipt.id === snapshot.audit.text.receiptId &&
+      textReceipt.inputHash === snapshot.audit.text.inputHash &&
+      textReceipt.inputHash === contentHash &&
+      textReceipt.configHash === snapshot.audit.text.configHash &&
+      textReceipt.configHash === textConfigHash &&
+      sha256Text(canonicalJson(textReceipt.result)) === snapshot.audit.text.resultHash &&
+      (textReceipt.result as Record<string, unknown>).semanticStatus === snapshot.audit.text.semanticStatus &&
+      submission.textAuditReceiptId === snapshot.audit.text.receiptId,
+    );
+    const imageAuditValid = snapshotShapeValid && snapshot.audit.image === null
+      ? !submission.imageUrl && !submission.imagePublicId && !submission.imageAuditReceiptId
+      : Boolean(
+          snapshotShapeValid && snapshot.audit.image && imageReceipt && currentImageInputHash &&
+          imageReceipt.kind === "IMAGE" && imageReceipt.userId === submission.creatorId &&
+          imageReceipt.brandProfileId === submission.brandProfileId &&
+          imageReceipt.id === snapshot.audit.image.receiptId &&
+          imageReceipt.inputHash === snapshot.audit.image.inputHash &&
+          imageReceipt.inputHash === currentImageInputHash &&
+          imageReceipt.configHash === snapshot.audit.image.configHash &&
+          imageReceipt.configHash === imageConfigHash &&
+          sha256Text(canonicalJson(imageReceipt.result)) === snapshot.audit.image.resultHash &&
+          submission.imageAuditReceiptId === snapshot.audit.image.receiptId,
+        );
+    const campaignSnapshotValid = Boolean(
+      snapshotShapeValid && snapshot.campaign.submissionId === submission.id &&
+      snapshot.campaign.title === submission.title &&
+      snapshot.campaign.brandProfileId === submission.brandProfileId &&
+      snapshot.campaign.brandName === brand.name &&
+      snapshot.campaign.contentHash === contentHash &&
+      snapshot.campaign.imageInputHash === currentImageInputHash,
+    );
+    const approvalSnapshotValid = Boolean(
+      snapshotShapeValid && snapshot.approval.decision === "APPROVED" &&
+      submission.status === "APPROVED" && submission.reviewerId === snapshot.approval.reviewerId,
+    );
+    const valid = Boolean(
+      passportIntegrityValid && textAuditValid && imageAuditValid &&
+      campaignSnapshotValid && approvalSnapshotValid,
+    );
+
+    return res.json({
+      valid,
+      status: valid ? "VALID" : "INVALIDATED",
+      passportId: passport.id,
+      passportHash: passport.passportHash,
+      issuedAt: passport.issuedAt,
+      campaign: {
+        title: snapshotShapeValid ? snapshot.campaign.title : submission.title,
+        brandName: snapshotShapeValid ? snapshot.campaign.brandName : brand.name,
+      },
+      approval: snapshotShapeValid ? {
+        reviewerName: snapshot.approval.reviewerName,
+        approvedAt: snapshot.approval.approvedAt,
+        decision: snapshot.approval.decision,
+      } : null,
+      checks: {
+        passportSignature: passportIntegrityValid,
+        campaignSnapshot: campaignSnapshotValid,
+        textAuditReceipt: textAuditValid,
+        imageAuditReceipt: snapshotShapeValid && snapshot.audit.image === null ? null : imageAuditValid,
+        approvalState: approvalSnapshotValid,
+      },
+      audit: snapshotShapeValid ? {
+        textSemanticStatus: snapshot.audit.text.semanticStatus,
+        image: snapshot.audit.image ? "completed" : "not_applicable",
+      } : null,
+      message: valid
+        ? "This release passport matches the approved campaign, audit receipts, and current brand rules."
+        : "This release passport no longer matches the current campaign or brand configuration.",
+    });
+  } catch (error) {
+    return handleError(res, error, "Unable to verify release passport.");
+  }
+});
+
 // Read a submission with findings, comments, and revision history.
 submissionsRouter.get("/:id", requireAuth, async (req, res) => {
   try {
@@ -639,6 +777,24 @@ submissionsRouter.get("/:id", requireAuth, async (req, res) => {
     return res.json({ submission });
   } catch (error) {
     return handleError(res, error, "Unable to load submission.");
+  }
+});
+
+// Authenticated users who can access an approved campaign can retrieve its release passport.
+submissionsRouter.get("/:id/passport", requireAuth, async (req, res) => {
+  try {
+    const submission = await loadAccessibleSubmission(
+      getRouteParam(req.params.id),
+      req.authUser!,
+      res,
+    );
+    if (!submission) return;
+    if (submission.status !== "APPROVED" || !submission.releasePassport) {
+      return res.status(404).json({ error: "No release passport has been issued for this campaign." });
+    }
+    return res.json({ passport: submission.releasePassport });
+  } catch (error) {
+    return handleError(res, error, "Unable to load release passport.");
   }
 });
 
@@ -977,6 +1133,91 @@ submissionsRouter.post(
         });
       }
 
+      let passportDraft: ReturnType<typeof createReleasePassport> | null = null;
+      if (status === "APPROVED") {
+        const brand = await loadAuditBrand(current.brandProfileId);
+        if (!brand) return res.status(404).json({ error: "Brand profile not found." });
+
+        const textAudit = await validateTextAuditReceipt(
+          current.textAuditReceiptId,
+          current.creatorId,
+          current.brandProfileId,
+          current.contentText,
+          brand,
+        );
+        if (!textAudit) {
+          return res.status(409).json({
+            error: "Approval blocked: the text audit is missing or stale. Return the campaign for a fresh preflight audit before approval.",
+          });
+        }
+        const hasImage = Boolean(current.imageUrl || current.imagePublicId);
+        let imageSnapshot: ReleasePassportSnapshot["audit"]["image"] = null;
+        let currentImageInputHash: string | null = null;
+        if (hasImage) {
+          if (!current.imageUrl || !current.imagePublicId) {
+            return res.status(409).json({ error: "Approval blocked: the campaign image asset is incomplete." });
+          }
+          const imageAudit = await validateImageAuditReceipt(
+            current.imageAuditReceiptId,
+            current.creatorId,
+            current.brandProfileId,
+            current.imageUrl,
+            current.imagePublicId,
+            current.imageAltText,
+            brand,
+          );
+          if (!imageAudit) {
+            return res.status(409).json({
+              error: "Approval blocked: the image audit is missing or stale. Return the campaign for a fresh image audit before approval.",
+            });
+          }
+          currentImageInputHash = imageAuditInputHash(
+            { secureUrl: current.imageUrl, publicId: current.imagePublicId },
+            current.imageAltText ?? "",
+          );
+          imageSnapshot = {
+            receiptId: imageAudit.receiptId,
+            inputHash: currentImageInputHash,
+            configHash: auditConfigHash(brand, "IMAGE"),
+            resultHash: imageAudit.resultHash,
+          };
+        }
+
+        const approvedAt = new Date().toISOString();
+        const snapshot: ReleasePassportSnapshot = {
+          schemaVersion: 1,
+          campaign: {
+            submissionId: current.id,
+            title: current.title,
+            brandProfileId: brand.id,
+            brandName: brand.name,
+            contentHash: sha256Text(current.contentText),
+            imageInputHash: currentImageInputHash,
+          },
+          audit: {
+            text: {
+              receiptId: textAudit.receiptId,
+              inputHash: sha256Text(current.contentText),
+              configHash: auditConfigHash(brand, "TEXT"),
+              resultHash: textAudit.resultHash,
+              semanticStatus: textAudit.semanticStatus,
+            },
+            image: imageSnapshot,
+          },
+          approval: {
+            decision: "APPROVED",
+            reviewerId: req.authUser!.id,
+            reviewerName: req.authUser!.name,
+            approvedAt,
+          },
+        };
+        const passportSecret = process.env.RELEASE_PASSPORT_SECRET || process.env.JWT_SECRET || "";
+        if (passportSecret.length < 32) {
+          return res.status(500).json({ error: "Release passport signing is not configured. Set RELEASE_PASSPORT_SECRET or a strong JWT_SECRET." });
+        }
+        passportDraft = createReleasePassport(snapshot, passportSecret);
+      }
+
       const reviewResult = await prisma.$transaction(async (tx) => {
         // Compare-and-set the state: only one reviewer can decide an IN_REVIEW
         // submission. A concurrent/replayed decision cannot overwrite the winner.
@@ -999,6 +1240,16 @@ submissionsRouter.post(
               body: note.trim(),
               submissionId: current.id,
               authorId: req.authUser!.id,
+            },
+          });
+        }
+
+        if (passportDraft) {
+          await tx.releasePassport.create({
+            data: {
+              submissionId: current.id,
+              passportHash: passportDraft.passportHash,
+              snapshot: passportDraft.snapshot as Prisma.InputJsonValue,
             },
           });
         }

@@ -3,11 +3,17 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
+import ReleasePassportVerificationPage from './ReleasePassportVerificationPage'
+
+const API_BASE_URL =
+  (import.meta.env.VITE_API_URL as string | undefined)?.trim().replace(/\/+$/, '') ||
+  'http://localhost:3000'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
       <Routes>
+        <Route path="/passport/:passportId" element={<ReleasePassportVerificationPage apiBaseUrl={API_BASE_URL} />} />
         <Route path="/" element={<App />}>
           <Route index element={<span hidden aria-hidden="true" />} />
           <Route path="login" element={<span hidden aria-hidden="true" />} />

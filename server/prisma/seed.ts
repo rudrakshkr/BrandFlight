@@ -68,6 +68,13 @@ async function main() {
       name: "Northstar Workspace",
       description: "Demo SaaS brand for testing BrandFlight.",
       brandColors: ["#2563EB", "#0F172A", "#FFFFFF"],
+      accessibilityPairs: [
+        { role: "BODY_TEXT", foreground: "#0F172A", background: "#FFFFFF" },
+        { role: "HEADING", foreground: "#0F172A", background: "#FFFFFF" },
+        { role: "CTA_TEXT", foreground: "#FFFFFF", background: "#2563EB" },
+        { role: "CAPTION", foreground: "#334155", background: "#FFFFFF" },
+        { role: "UI_ELEMENT", foreground: "#2563EB", background: "#FFFFFF" },
+      ],
     },
   });
 
@@ -102,6 +109,12 @@ async function main() {
       category: "ACCESSIBILITY" as const,
       title: "Provide meaningful image alt text",
       description: "Campaign images require meaningful alternative text of 10 to 150 characters.",
+    },
+    {
+      ruleCode: "ACCESSIBILITY-02",
+      category: "ACCESSIBILITY" as const,
+      title: "Review text contrast in campaign artwork",
+      description: "Visible campaign text should meet the applicable WCAG 2.1 contrast threshold. AI estimates on complex backgrounds require human review.",
     },
   ];
 

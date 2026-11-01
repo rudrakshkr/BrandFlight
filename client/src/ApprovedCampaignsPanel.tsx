@@ -178,22 +178,26 @@ export default function ApprovedCampaignsPanel({ apiBaseUrl, token }: Props) {
               <p>Once a Reviewer or Manager approves a campaign, it will appear here for everyone.</p>
             </div>
           ) : campaigns.map((item) => (
-            <button
-              type="button"
+            <article
               key={item.id}
               className={`bf-approved-item${selectedId === item.id ? ' active' : ''}`}
-              onClick={() => void openCampaign(item)}
-              disabled={opening}
-              aria-current={selectedId === item.id ? 'true' : undefined}
             >
-              <span className="bf-approved-item-top">
-                <span className="bf-approved-status">Approved</span>
-                <span className="bf-approved-date">{displayDate(item.updatedAt)}</span>
-              </span>
-              <strong>{item.title}</strong>
-              <span className="bf-approved-item-meta">{item.brandProfile?.name ?? 'Brand'} · {item.creator?.name ?? 'Creator'}</span>
-              <span className="bf-approved-item-counts">{item._count.comments} comments · {item._count.revisions} revisions</span>
-            </button>
+              <button
+                type="button"
+                className="bf-approved-item-open"
+                onClick={() => void openCampaign(item)}
+                disabled={opening}
+                aria-current={selectedId === item.id ? 'true' : undefined}
+              >
+                <span className="bf-approved-item-top">
+                  <span className="bf-approved-status">Approved</span>
+                  <span className="bf-approved-date">{displayDate(item.updatedAt)}</span>
+                </span>
+                <strong>{item.title}</strong>
+                <span className="bf-approved-item-meta">{item.brandProfile?.name ?? 'Brand'} · {item.creator?.name ?? 'Creator'}</span>
+                <span className="bf-approved-item-counts">{item._count.comments} comments · {item._count.revisions} revisions</span>
+              </button>
+            </article>
           ))}
         </aside>
 

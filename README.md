@@ -211,10 +211,14 @@ Code in a repository snapshot cannot verify whether a live deployment is correct
 
 Do not assume that local success proves the deployed migrations, environment variables, CORS policy, Gemini calls, or Cloudinary uploads work.
 
+## Accessibility colour standards
+
+Managers can save role-based foreground/background standards in **Brand Rulebook → Brand Profile → Accessible colour roles**. Saving these standards updates the image-audit configuration hash, so image audit receipts created under earlier standards become stale and must be rerun before they can be attached to a submission. Image preflight uses Gemini only to locate visible text regions and classify their likely role and size. The server then samples foreground glyph-core pixels and the surrounding/interior backing pixels from the uploaded image using Sharp. Contrast ratios are calculated only when the text location is high confidence, the backing surface is opaque and sufficiently uniform, and a compact foreground colour cluster can be isolated. A 0.15:1 guard band above the target is required to return a pixel-sampled pass; borderline, ambiguous, variable, transparent, multicolour, or poorly located regions are routed for manual review. Results and manual-review findings are shown to both the Creator and Reviewer. Existing brand profiles can use the default WCAG targets until a Manager saves the role palette.
+
 ## Known limitations
 
 - This is a prototype, not a replacement for legal, compliance, or accessibility review. AI findings can be wrong or miss context; reviewers remain responsible for final decisions.
-- Image checks analyse image colour information and alt-text metadata. They do not perform full OCR of text inside flattened banners and do not certify complete WCAG 2.1 conformance or replace a human accessibility audit.
+- Image preflight combines deterministic palette/alt-text checks with Gemini-assisted text-region location and deterministic pixel sampling. Contrast results use colours sampled from the uploaded image, not Gemini-generated colour estimates. Sampling fails closed when the background is variable or transparent, text colours cannot be isolated, the detected region is uncertain, or the bounding box is missing. Gemini still estimates text location, role, and size; non-text icon/control-boundary contrast is not yet measured automatically. This is not full OCR or a WCAG conformance certification, and reviewers remain responsible for checking the final exported artwork.
 - A direct phrase replacement is offered only when a non-empty, safe suggestion is available. Deterministic terminology and numerical-claim findings may provide guidance without a direct replacement span.
 - Audit receipts bind results to input/configuration hashes; they are not a separate append-only, tamper-proof decision-event log.
 - The integration suite needs a dedicated PostgreSQL test database. Without it, the current test command can report a skipped integration suite while the unit tests pass.
