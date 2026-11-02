@@ -1362,10 +1362,14 @@ submissionsRouter.post("/:id/comments", requireAuth, async (req, res) => {
       error: "Comment body is required and must be at most 2,000 characters.",
     });
   }
-  if (/^(?:REVIEWER OVERRIDE|CHANGE REQUEST)\b/i.test(body.body.trim())) {
+  const commentBody = body.body.trim();
+  if (/^(?:REVIEWER OVERRIDE|CHANGE REQUEST|OVERRIDE DECISION)\b/i.test(commentBody)) {
     return res.status(400).json({
       error: "Review decision records are created only by the review workflow.",
     });
+  }
+  if (/^OVERRIDE REQUEST\b/i.test(commentBody) && req.authUser!.role !== "CREATOR") {
+    return res.status(403).json({ error: "Only the campaign creator can submit an override request." });
   }
 
   try {
@@ -1395,3 +1399,89 @@ submissionsRouter.post("/:id/comments", requireAuth, async (req, res) => {
     return handleError(res, error, "Unable to add comment.");
   }
 });
+
+// Reviewer/Manager acknowledgement of a creator override request. This is an
+// auditable discussion decision, not a release-gate bypass.
+submissionsRouter.post(
+  "/:id/override-requests/:commentId/decision",
+  requireAuth,
+  requireRoles("REVIEWER", "MANAGER"),
+  async (req, res) => {
+    const body: unknown = req.body;
+    if (!isRecord(body)) {
+      return res.status(400).json({ error: "A JSON object is required." });
+    }
+
+    const decision = body.decision;
+    const note = typeof body.note === "string" ? body.note.trim() : "";
+    if ((decision !== "ACCEPTED" && decision !== "REJECTED") || note.length < 10 || note.length > 1000) {
+      return res.status(400).json({ error: "Choose ACCEPTED or REJECTED and provide a decision note of 10–1,000 characters." });
+    }
+
+    try {
+      const current = await loadAccessibleSubmission(
+        getRouteParam(req.params.id),
+        req.authUser!,
+        res,
+      );
+      if (!current) return;
+
+      const result = await prisma.$transaction(async (tx) => {
+        const submission = await tx.submission.findUnique({
+          where: { id: current.id },
+          select: { status: true },
+        });
+        if (!submission || submission.status !== "IN_REVIEW") {
+          return { kind: "not_in_review" as const };
+        }
+
+        const request = await tx.comment.findFirst({
+          where: { id: getRouteParam(req.params.commentId), submissionId: current.id },
+          include: { author: { select: { role: true } } },
+        });
+        if (
+          !request ||
+          !request.body.startsWith("OVERRIDE REQUEST\n") ||
+          request.author.role !== "CREATOR" ||
+          request.authorId !== current.creatorId
+        ) {
+          return { kind: "not_found" as const };
+        }
+
+        const decisionPrefix = `OVERRIDE DECISION\nRequest ID: ${request.id}\n`;
+        const existingDecision = await tx.comment.findFirst({
+          where: { submissionId: current.id, body: { startsWith: decisionPrefix } },
+        });
+        if (existingDecision) return { kind: "already_decided" as const };
+
+        const comment = await tx.comment.create({
+          data: {
+            body: `${decisionPrefix}Decision: ${decision}\nDecision note: ${note}`,
+            submissionId: current.id,
+            authorId: req.authUser!.id,
+          },
+          include: {
+            author: { select: { id: true, name: true, email: true, role: true } },
+          },
+        });
+        return { kind: "created" as const, comment };
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+      if (result.kind === "not_in_review") {
+        return res.status(409).json({ error: "Override requests can only be decided while the campaign is in review." });
+      }
+      if (result.kind === "not_found") {
+        return res.status(404).json({ error: "Creator override request not found." });
+      }
+      if (result.kind === "already_decided") {
+        return res.status(409).json({ error: "This override request already has a recorded decision." });
+      }
+      return res.status(201).json({ comment: result.comment });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
+        return res.status(409).json({ error: "This override request was decided concurrently. Refresh the campaign discussion." });
+      }
+      return handleError(res, error, "Unable to record override-request decision.");
+    }
+  },
+);

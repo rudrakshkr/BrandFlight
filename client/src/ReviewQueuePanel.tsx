@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import type { ImageAuditData } from './types/imageAudit'
 import ImageTextContrastReport from './ImageTextContrastReport'
 import CampaignChangeIntelligence from './CampaignChangeIntelligence'
@@ -7,6 +7,7 @@ import { getReadableImageFindingCopy } from './lib/imageAuditCopy'
 
 const MIN_REVIEWER_OVERRIDE_LENGTH = 10
 
+type OverrideRequestDecision = 'ACCEPTED' | 'REJECTED'
 type Decision = 'APPROVED' | 'CHANGES_REQUESTED'
 
 interface Summary {
@@ -38,6 +39,13 @@ interface Comment {
   body: string
   createdAt: string
   author?: { id: string; name: string; role: string; email: string }
+}
+
+function findOverrideDecisionRecord(comments: Comment[], requestId: string) {
+  return comments.find((comment) =>
+    comment.body.startsWith('OVERRIDE DECISION\n') &&
+    comment.body.split('\n').includes(`Request ID: ${requestId}`),
+  )
 }
 
 interface Detail extends Summary {
@@ -81,6 +89,9 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
   const [commentText, setCommentText] = useState('')
   const [queueView, setQueueView] = useState<'IN_REVIEW' | 'HISTORY'>('IN_REVIEW')
   const [pendingDecision, setPendingDecision] = useState<Decision | null>(null)
+  const [pendingOverrideDecision, setPendingOverrideDecision] = useState<{ requestId: string; decision: OverrideRequestDecision } | null>(null)
+  const [overrideDecisionNote, setOverrideDecisionNote] = useState('')
+  const [overrideDecisionBusy, setOverrideDecisionBusy] = useState(false)
 
   const gateFindingCandidates = selected
     ? [
@@ -161,6 +172,8 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
       if (!response.ok || !data?.submission) throw new Error(data?.error ?? `Could not open submission (HTTP ${response.status}).`)
       setSelected(data.submission)
       setCommentText('')
+      setPendingOverrideDecision(null)
+      setOverrideDecisionNote('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not open submission.')
     } finally {
@@ -235,6 +248,52 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
       setError(err instanceof Error ? err.message : 'Could not add comment.')
     } finally {
       setCommentBusy(false)
+    }
+  }
+
+  const submitOverrideRequestDecision = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!selected || !pendingOverrideDecision || overrideDecisionBusy) return
+
+    const note = overrideDecisionNote.trim()
+    if (note.length < 10 || note.length > 1000) {
+      setError('Add a decision rationale between 10 and 1,000 characters.')
+      return
+    }
+
+    setOverrideDecisionBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/api/submissions/${encodeURIComponent(selected.id)}/override-requests/${encodeURIComponent(pendingOverrideDecision.requestId)}/decision`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ decision: pendingOverrideDecision.decision, note }),
+        },
+      )
+      const data = await response.json().catch(() => null) as { comment?: Comment; error?: string } | null
+      if (!response.ok || !data?.comment) {
+        throw new Error(data?.error ?? `Could not record override decision (HTTP ${response.status}).`)
+      }
+
+      setSelected((current) => current && current.id === selected.id
+        ? { ...current, comments: [...current.comments, data.comment!] }
+        : current)
+      setQueue((current) => current.map((item) => item.id === selected.id
+        ? { ...item, _count: { ...item._count, comments: item._count.comments + 1 } }
+        : item))
+      setNotice(`Override request ${pendingOverrideDecision.decision.toLowerCase()}. The decision is recorded; release findings remain subject to the normal approval gate.`)
+      setPendingOverrideDecision(null)
+      setOverrideDecisionNote('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not record override decision.')
+    } finally {
+      setOverrideDecisionBusy(false)
     }
   }
 
@@ -758,7 +817,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                     </div>
                     {comment.body.startsWith('CREATOR UPDATE') ? (
                       <>
-                        <span className="bf-creator-update-badge">Creator revision summary</span>
+                        <span className="bf-creator-update-badge">Creator submission note</span>
                         <div className="bf-creator-update-content">
                           <p>{comment.body.split('\n').slice(1).join('\n').trim()}</p>
                         </div>
@@ -779,6 +838,50 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                             return <p key={`${comment.id}-detail-${index}`}>{separator > 0 ? <><strong>{line.slice(0, separator + 1)}</strong> {line.slice(separator + 1).trim()}</> : line}</p>
                           })}
                         </div>
+                        {findOverrideDecisionRecord(selected.comments, comment.id) ? (
+                          <>
+                            <span className={`bf-override-decision-badge ${findOverrideDecisionRecord(selected.comments, comment.id)?.body.includes('\nDecision: ACCEPTED\n') ? 'accepted' : 'rejected'}`}>
+                              {findOverrideDecisionRecord(selected.comments, comment.id)?.body.includes('\nDecision: ACCEPTED\n') ? 'Request accepted' : 'Request rejected'}
+                            </span>
+                            <p>{findOverrideDecisionRecord(selected.comments, comment.id)?.body.split('\n').find((line) => line.startsWith('Decision note: '))?.slice('Decision note: '.length)}</p>
+                          </>
+                        ) : selected.status === 'IN_REVIEW' && (
+                          pendingOverrideDecision?.requestId === comment.id ? (
+                            <form className="bf-override-decision-form" onSubmit={(event) => void submitOverrideRequestDecision(event)}>
+                              <label htmlFor={`bf-override-decision-note-${comment.id}`}>Decision rationale</label>
+                              <textarea
+                                id={`bf-override-decision-note-${comment.id}`}
+                                rows={3}
+                                minLength={10}
+                                maxLength={1000}
+                                required
+                                value={overrideDecisionNote}
+                                onChange={(event) => setOverrideDecisionNote(event.target.value)}
+                                placeholder="Explain why the request is accepted or rejected…"
+                                disabled={overrideDecisionBusy}
+                              />
+                              <small>A decision records reviewer acknowledgement only. Active findings remain subject to the normal approval gate.</small>
+                              <div className="bf-override-decision-actions">
+                                <button type="button" className="bf-btn-secondary" disabled={overrideDecisionBusy} onClick={() => { setPendingOverrideDecision(null); setOverrideDecisionNote('') }}>Cancel</button>
+                                <button type="submit" className="bf-btn-primary" disabled={overrideDecisionBusy || overrideDecisionNote.trim().length < 10}>
+                                  {overrideDecisionBusy ? 'Saving…' : `Confirm ${pendingOverrideDecision.decision === 'ACCEPTED' ? 'acceptance' : 'rejection'}`}
+                                </button>
+                              </div>
+                            </form>
+                          ) : (
+                            <div className="bf-override-decision-actions">
+                              <button type="button" className="bf-btn-secondary" disabled={overrideDecisionBusy} onClick={() => { setPendingOverrideDecision({ requestId: comment.id, decision: 'ACCEPTED' }); setOverrideDecisionNote(''); setError(null) }}>Accept request</button>
+                              <button type="button" className="bf-btn-secondary" disabled={overrideDecisionBusy} onClick={() => { setPendingOverrideDecision({ requestId: comment.id, decision: 'REJECTED' }); setOverrideDecisionNote(''); setError(null) }}>Reject request</button>
+                            </div>
+                          )
+                        )}
+                      </>
+                    ) : comment.body.startsWith('OVERRIDE DECISION') ? (
+                      <>
+                        <span className={`bf-override-decision-badge ${comment.body.includes('\nDecision: ACCEPTED\n') ? 'accepted' : 'rejected'}`}>
+                          {comment.body.includes('\nDecision: ACCEPTED\n') ? 'Override request accepted' : 'Override request rejected'}
+                        </span>
+                        <p>{comment.body.split('\n').find((line) => line.startsWith('Decision note: '))?.slice('Decision note: '.length)}</p>
                       </>
                     ) : comment.body.startsWith('REVIEWER OVERRIDE') ? (
                       <>

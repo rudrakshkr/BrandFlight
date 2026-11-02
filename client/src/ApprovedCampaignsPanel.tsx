@@ -51,6 +51,7 @@ export default function ApprovedCampaignsPanel({ apiBaseUrl, token }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selected, setSelected] = useState<ApprovedDetail | null>(null)
   const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
   const [opening, setOpening] = useState(false)
   const [posting, setPosting] = useState(false)
   const [commentText, setCommentText] = useState('')
@@ -111,6 +112,13 @@ export default function ApprovedCampaignsPanel({ apiBaseUrl, token }: Props) {
     }
   }
 
+  const normalizedSearch = search.trim().toLowerCase()
+  const filteredCampaigns = campaigns.filter((item) => [
+    item.title,
+    item.brandProfile?.name ?? '',
+    item.creator?.name ?? '',
+  ].some((value) => value.toLowerCase().includes(normalizedSearch)))
+
   const postComment = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const body = commentText.trim()
@@ -168,16 +176,42 @@ export default function ApprovedCampaignsPanel({ apiBaseUrl, token }: Props) {
         <aside className="bf-approved-list" aria-label="Approved campaigns">
           <div className="bf-approved-list-head">
             <h2>Campaigns</h2>
-            <span>{campaigns.length}</span>
+            <span>{filteredCampaigns.length}</span>
           </div>
+          <label className="bf-approved-search">
+            <span>Search approved campaigns</span>
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Campaign, brand, or creator"
+            />
+          </label>
+          {loading && campaigns.length > 0 && (
+            <div className="bf-approved-loading-inline" role="status">Refreshing campaign list…</div>
+          )}
           {loading && campaigns.length === 0 ? (
-            <div className="bf-approved-empty">Loading approved campaigns…</div>
+            <div className="bf-approved-skeleton-list" role="status" aria-live="polite" aria-label="Loading approved campaigns">
+              {Array.from({ length: 4 }, (_, index) => (
+                <div className="bf-approved-skeleton-item" key={index} aria-hidden="true">
+                  <span className="bf-skeleton-line short" />
+                  <span className="bf-skeleton-line" />
+                  <span className="bf-skeleton-line medium" />
+                </div>
+              ))}
+            </div>
           ) : campaigns.length === 0 ? (
             <div className="bf-approved-empty">
               <strong>No approved campaigns yet</strong>
               <p>Once a Reviewer or Manager approves a campaign, it will appear here for everyone.</p>
             </div>
-          ) : campaigns.map((item) => (
+          ) : filteredCampaigns.length === 0 ? (
+            <div className="bf-approved-empty">
+              <strong>No matching campaigns</strong>
+              <p>Try a different campaign name, brand, or creator.</p>
+              <button type="button" className="bf-btn-secondary" onClick={() => setSearch('')}>Clear search</button>
+            </div>
+          ) : filteredCampaigns.map((item) => (
             <article
               key={item.id}
               className={`bf-approved-item${selectedId === item.id ? ' active' : ''}`}
@@ -254,7 +288,19 @@ export default function ApprovedCampaignsPanel({ apiBaseUrl, token }: Props) {
                         <span>{comment.author?.role ?? 'User'}</span>
                         <time dateTime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time>
                       </div>
-                      <p>{comment.body}</p>
+                      {comment.body.startsWith('CREATOR UPDATE') ? (
+                        <>
+                          <span className="bf-creator-update-badge">Creator submission note</span>
+                          <p>{comment.body.split('\n').slice(1).join('\n').trim()}</p>
+                        </>
+                      ) : comment.body.startsWith('OVERRIDE DECISION') ? (
+                        <>
+                          <span className={`bf-override-decision-badge ${comment.body.includes('\nDecision: ACCEPTED\n') ? 'accepted' : 'rejected'}`}>
+                            {comment.body.includes('\nDecision: ACCEPTED\n') ? 'Override request accepted' : 'Override request rejected'}
+                          </span>
+                          <p>{comment.body.split('\n').find((line) => line.startsWith('Decision note: '))?.slice('Decision note: '.length)}</p>
+                        </>
+                      ) : <p>{comment.body}</p>}
                     </article>
                   ))}
                 </div>

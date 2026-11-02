@@ -95,6 +95,7 @@ export default function SavedSubmissionsPanel({
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [tagFilter, setTagFilter] = useState('ALL')
+  const [cardsPerRow, setCardsPerRow] = useState<2 | 3 | 4>(3)
   const [notice, setNotice] = useState<string | null>(null)
   const [pendingSubmit, setPendingSubmit] = useState<SubmissionSummary | null>(null)
   const [submitSummary, setSubmitSummary] = useState('')
@@ -270,7 +271,7 @@ export default function SavedSubmissionsPanel({
 
     const summary = submitSummary.trim()
     if (summary.length < 10 || summary.length > 1000) {
-      setSubmitDialogError('Enter a change summary between 10 and 1,000 characters.')
+      setSubmitDialogError('Enter a note for the review team between 10 and 1,000 characters.')
       return
     }
 
@@ -406,6 +407,20 @@ export default function SavedSubmissionsPanel({
           </p>
         </div>
         <div className="bf-saved-header-actions">
+          <div className="bf-saved-card-density" role="group" aria-label="Campaign cards per row">
+            <span>Cards per row</span>
+            {[2, 3, 4].map((count) => (
+              <button
+                type="button"
+                key={count}
+                className={cardsPerRow === count ? 'active' : ''}
+                aria-pressed={cardsPerRow === count}
+                onClick={() => setCardsPerRow(count as 2 | 3 | 4)}
+              >
+                {count}
+              </button>
+            ))}
+          </div>
           <button type="button" className="bf-btn-secondary" onClick={() => void loadSubmissions()} disabled={loading}>
             {loading ? 'Refreshing…' : 'Refresh'}
           </button>
@@ -417,7 +432,21 @@ export default function SavedSubmissionsPanel({
       {notice && <div className="bf-save-feedback success" role="status">{notice}</div>}
 
       {loading ? (
-        <div className="bf-saved-empty">Loading campaigns…</div>
+        <div
+          className={`bf-saved-grid bf-saved-grid-columns-${cardsPerRow} bf-saved-grid-loading`}
+          role="status"
+          aria-live="polite"
+          aria-label="Loading saved campaigns"
+        >
+          {Array.from({ length: cardsPerRow }, (_, index) => (
+            <div className="bf-saved-skeleton-card" key={index} aria-hidden="true">
+              <span className="bf-skeleton-line short" />
+              <span className="bf-skeleton-line" />
+              <span className="bf-skeleton-line medium" />
+              <span className="bf-skeleton-block" />
+            </div>
+          ))}
+        </div>
       ) : submissions.length === 0 ? (
         <div className="bf-saved-empty">
           <h2>No campaigns yet</h2>
@@ -463,7 +492,7 @@ export default function SavedSubmissionsPanel({
               <button type="button" className="bf-btn-secondary" onClick={clearFilters}>Clear filters</button>
             </div>
           ) : (
-            <div className="bf-saved-grid">
+            <div className={`bf-saved-grid bf-saved-grid-columns-${cardsPerRow}`}>
               {filteredSubmissions.map((item) => {
                 const editable = item.status === 'DRAFT' || item.status === 'CHANGES_REQUESTED'
                 const isEditing = editingDetailsId === item.id
@@ -589,18 +618,18 @@ export default function SavedSubmissionsPanel({
             aria-labelledby="bf-submit-review-title"
             aria-describedby="bf-submit-review-description"
           >
-            <span className="bf-submit-review-eyebrow">SUBMISSION SUMMARY</span>
-            <h2 id="bf-submit-review-title">What changed in this version?</h2>
+            <span className="bf-submit-review-eyebrow">REVIEW SUBMISSION</span>
+            <h2 id="bf-submit-review-title">What should the review team know?</h2>
             <p id="bf-submit-review-description">
-              Give the reviewer or manager a brief summary of the updates you made. This note will be saved
-              to the campaign activity and shown with the submission.
+              Share the campaign context, goals, or key updates for the review team. This note will be saved
+              to campaign activity, whether this is the first submission or a revised draft.
             </p>
             <div className="bf-submit-review-campaign">
               <span>Campaign</span>
               <strong>{pendingSubmit.title}</strong>
             </div>
             <form className="bf-submit-review-form" onSubmit={(event) => void handleSubmitForReview(event)}>
-              <label htmlFor="bf-submit-review-summary">Changes made</label>
+              <label htmlFor="bf-submit-review-summary">Note for the review team</label>
               <textarea
                 id="bf-submit-review-summary"
                 rows={5}
@@ -612,7 +641,7 @@ export default function SavedSubmissionsPanel({
                   setSubmitSummary(event.target.value)
                   setSubmitDialogError(null)
                 }}
-                placeholder="For example: Updated the headline, replaced the unverified statistic, and added descriptive alt text."
+                placeholder="For example: This is the first review of our product launch campaign for existing customers. The draft is ready for feedback on tone and claims."
                 disabled={submittingId === pendingSubmit.id}
                 autoFocus
               />
@@ -701,7 +730,7 @@ export default function SavedSubmissionsPanel({
                   </div>
                   {comment.body.startsWith('CREATOR UPDATE') ? (
                     <>
-                      <span className="bf-creator-update-badge">Creator revision summary</span>
+                      <span className="bf-creator-update-badge">Creator submission note</span>
                       <div className="bf-creator-update-content">
                         <p>{comment.body.split('\n').slice(1).join('\n').trim()}</p>
                       </div>
@@ -712,6 +741,13 @@ export default function SavedSubmissionsPanel({
                       <div className="bf-change-request-content">
                         <p>{comment.body.split('\n').slice(1).join('\n').trim()}</p>
                       </div>
+                    </>
+                  ) : comment.body.startsWith('OVERRIDE DECISION') ? (
+                    <>
+                      <span className={`bf-override-decision-badge ${comment.body.includes('\nDecision: ACCEPTED\n') ? 'accepted' : 'rejected'}`}>
+                        {comment.body.includes('\nDecision: ACCEPTED\n') ? 'Override request accepted' : 'Override request rejected'}
+                      </span>
+                      <p>{comment.body.split('\n').find((line) => line.startsWith('Decision note: '))?.slice('Decision note: '.length)}</p>
                     </>
                   ) : comment.body.startsWith('OVERRIDE REQUEST') ? (
                     <>

@@ -811,19 +811,31 @@ export function App() {
     (comment) => comment.author?.role === 'REVIEWER' || comment.author?.role === 'MANAGER',
   )
 
-  const hasOverrideRequest = (group: ConsolidatedFinding, match?: FindingMatch) => submissionComments.some((comment) => {
-    const body = comment.body ?? ''
-    if (!body.startsWith('OVERRIDE REQUEST')) return false
-    const ruleLine = body.split('\n').find((line) => line.startsWith('Rule(s): ')) ?? ''
-    const requestedRules = ruleLine.slice('Rule(s): '.length).split(',').map((code) => code.trim())
-    const evidenceLine = body.split('\n').find((line) => line.startsWith('Flagged evidence: ')) ?? ''
-    const requestedEvidence = evidenceLine.slice('Flagged evidence: '.length).split(' / ').map((value) => value.trim().toLowerCase()).filter(Boolean)
+  const getOverrideRequestStatus = (group: ConsolidatedFinding, match?: FindingMatch) => {
     const targetRules = match?.ruleCodes ?? group.ruleCodes
-    const hasRule = targetRules.some((code) => requestedRules.includes(code))
-    if (!hasRule) return false
-    if (match) return requestedEvidence.includes(match.evidence.trim().toLowerCase())
-    return group.evidences.some((evidence) => requestedEvidence.includes(evidence.trim().toLowerCase()))
-  })
+    const targetEvidence = match?.evidence.trim().toLowerCase()
+    const request = submissionComments.find((comment) => {
+      const body = comment.body ?? ''
+      if (!body.startsWith('OVERRIDE REQUEST\n')) return false
+      const ruleLine = body.split('\n').find((line) => line.startsWith('Rule(s): ')) ?? ''
+      const requestedRules = ruleLine.slice('Rule(s): '.length).split(',').map((code) => code.trim())
+      const evidenceLine = body.split('\n').find((line) => line.startsWith('Flagged evidence: ')) ?? ''
+      const requestedEvidence = evidenceLine.slice('Flagged evidence: '.length).split(' / ').map((value) => value.trim().toLowerCase()).filter(Boolean)
+      if (!targetRules.some((code) => requestedRules.includes(code))) return false
+      if (targetEvidence) return requestedEvidence.includes(targetEvidence)
+      return group.evidences.some((evidence) => requestedEvidence.includes(evidence.trim().toLowerCase()))
+    })
+
+    if (!request) return null
+    const decision = submissionComments.find((comment) =>
+      comment.body.startsWith('OVERRIDE DECISION\n') &&
+      comment.body.split('\n').includes(`Request ID: ${request.id}`),
+    )
+    const decisionLine = decision?.body.split('\n').find((line) => line.startsWith('Decision: '))
+    if (decisionLine === 'Decision: ACCEPTED') return 'ACCEPTED' as const
+    if (decisionLine === 'Decision: REJECTED') return 'REJECTED' as const
+    return 'PENDING' as const
+  }
 
   const activeEvidences = useMemo(
     () => consolidatedFindings.flatMap((group) => group.evidences),
@@ -928,7 +940,7 @@ export function App() {
   }
 
   const handleOpenOverrideRequest = (group: ConsolidatedFinding, match?: FindingMatch) => {
-    if (hasOverrideRequest(group, match)) {
+    if (getOverrideRequestStatus(group, match)) {
       setGuidanceCopyFeedback({ groupId: occurrenceFeedbackId(group, match), message: 'An override request for this phrase is already saved in the campaign discussion.', isError: false })
       return
     }
@@ -1897,16 +1909,24 @@ export function App() {
                         {saveDraftBusy ? 'Saving…' : 'Save Draft'}
                       </button>
 
-                      <button
-                        type="button"
-                        className="bf-btn-primary bf-refine-copy-button"
-                        disabled={refineBusy || isAuditing || !content.trim() || authSession?.user.role !== 'CREATOR'}
-                        onClick={() => void handleRefineCopy()}
-                        title="Refine the copy against active brand rules and approved facts. A fresh audit is still required."
-                      >
-                        <span className="bf-refine-button-spark" aria-hidden="true">✦</span>
-                        {refineBusy ? 'Refining…' : 'Refine copy'}
-                      </button>
+                      {auditResult &&
+                        !auditRestoredFromSubmission &&
+                        auditedContent === content &&
+                        auditResult.findings.some((finding) =>
+                          ['TONE', 'TERMINOLOGY', 'CLAIM'].includes(finding.category) &&
+                          (finding.severity === 'WARNING' || finding.severity === 'ERROR'),
+                        ) && (
+                          <button
+                            type="button"
+                            className="bf-btn-secondary bf-refine-copy-button"
+                            disabled={refineBusy || isAuditing || !content.trim() || authSession?.user.role !== 'CREATOR'}
+                            onClick={() => void handleRefineCopy()}
+                            title="Refine copy because the latest preflight audit found text warnings or errors."
+                          >
+                            <span className="bf-refine-button-spark" aria-hidden="true">✦</span>
+                            {refineBusy ? 'Refining…' : 'Refine copy'}
+                          </button>
+                        )}
 
                       <button
                         type="submit"
@@ -2504,7 +2524,7 @@ export function App() {
                                 <div className="bf-finding-occurrences">
                                   {group.matches.map((match) => {
                                     const feedbackId = occurrenceFeedbackId(group, match)
-                                    const overrideRequested = hasOverrideRequest(group, match)
+                                    const overrideRequestStatus = getOverrideRequestStatus(group, match)
                                     const feedback = guidanceCopyFeedback?.groupId === feedbackId ? guidanceCopyFeedback : null
                                     return (
                                       <section className="bf-finding-occurrence" key={`${group.id}-${match.evidence}`}>
@@ -2532,8 +2552,10 @@ export function App() {
                                           <button type="button" className="bf-btn-action" onClick={() => void handleCopyGuidance(group, match)}>
                                             {feedback?.message.startsWith('Guidance copied') && !feedback.isError ? 'Guidance copied' : 'Copy guidance'}
                                           </button>
-                                          {overrideRequested ? (
-                                            <span className="bf-override-request-status" role="status">Override requested</span>
+                                          {overrideRequestStatus ? (
+                                            <span className={`bf-override-request-status ${overrideRequestStatus.toLowerCase()}`} role="status">
+                                              {overrideRequestStatus === 'PENDING' ? 'Override requested' : `Override ${overrideRequestStatus.toLowerCase()}`}
+                                            </span>
                                           ) : (
                                             <button type="button" className="bf-btn-action" onClick={() => handleOpenOverrideRequest(group, match)} title={!editingSubmissionId ? 'Save this campaign as a draft first.' : 'Ask a reviewer or manager to consider an exception for this phrase.'}>Request override</button>
                                           )}
@@ -2690,7 +2712,9 @@ export function App() {
       {demoLoginBusyRole && (
         <div className="bf-session-switch-overlay" role="status" aria-live="polite">
           <div className="bf-session-switch-card">
-            <span className="bf-session-switch-mark" aria-hidden="true">✦</span>
+            <span className="bf-session-switch-mark" role="img" aria-label="BrandFlight logo">
+              <img src="/brandflight-mark.svg" alt="" />
+            </span>
             <span className="bf-session-switch-eyebrow">BRANDFLIGHT DEMO</span>
             <h2>Switching session</h2>
             <p>Opening the {demoLoginBusyRole === 'CREATOR' ? 'Creator' : demoLoginBusyRole === 'REVIEWER' ? 'Reviewer' : 'Manager'} workspace</p>

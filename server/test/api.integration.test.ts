@@ -431,6 +431,53 @@ if (!testDatabaseUrl) {
       assert.ok(data.submission.comments.some((comment: { body: string }) => comment.body.startsWith("OVERRIDE REQUEST")));
     });
 
+    it("records reviewer decisions on creator override requests without changing campaign status", async () => {
+      const draft = await createDraft("Override decision test", "The workspace helps teams coordinate projects.", true);
+      const { response: submitResponse, data: submitData } = await requestJson(`/api/submissions/${draft.id}/submit`, {
+        method: "POST",
+        body: JSON.stringify({ changeSummary: "Please review this campaign context and its supporting source material." }),
+      }, creatorToken);
+      assert.equal(submitResponse.status, 200, JSON.stringify(submitData));
+      assert.equal(submitData.submission.status, "IN_REVIEW");
+
+      const requestBody = "OVERRIDE REQUEST\nRule(s): TERM-01\nFinding: Contextual terminology\nFlagged evidence: revolutionary\nCreator justification: The term appears in a direct quotation and is not presented as a product claim.";
+      const { response: requestResponse, data: requestData } = await requestJson(`/api/submissions/${draft.id}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ body: requestBody }),
+      }, creatorToken);
+      assert.equal(requestResponse.status, 201, JSON.stringify(requestData));
+
+      const decisionNote = "The contextual use is supported by the cited source and is not a product performance promise.";
+      const decisionPath = `/api/submissions/${draft.id}/override-requests/${requestData.comment.id}/decision`;
+      const { response: creatorDecisionResponse } = await requestJson(decisionPath, {
+        method: "POST",
+        body: JSON.stringify({ decision: "ACCEPTED", note: "The creator cannot decide their own override request." }),
+      }, creatorToken);
+      assert.equal(creatorDecisionResponse.status, 403);
+
+      const { response: decisionResponse, data: decisionData } = await requestJson(decisionPath, {
+        method: "POST",
+        body: JSON.stringify({ decision: "ACCEPTED", note: decisionNote }),
+      }, reviewerToken);
+      assert.equal(decisionResponse.status, 201, JSON.stringify(decisionData));
+      assert.match(decisionData.comment.body, /Decision: ACCEPTED/);
+      assert.match(decisionData.comment.body, new RegExp(`Request ID: ${requestData.comment.id}`));
+      assert.equal(decisionData.comment.body.includes(decisionNote), true);
+
+      const { response: duplicateResponse, data: duplicateData } = await requestJson(decisionPath, {
+        method: "POST",
+        body: JSON.stringify({ decision: "REJECTED", note: "A different reviewer interpretation should not replace the first decision." }),
+      }, managerToken);
+      assert.equal(duplicateResponse.status, 409, JSON.stringify(duplicateData));
+
+      const { response: readResponse, data: readData } = await requestJson(`/api/submissions/${draft.id}`, {}, creatorToken);
+      assert.equal(readResponse.status, 200);
+      assert.equal(readData.submission.status, "IN_REVIEW");
+      assert.ok(readData.submission.comments.some((comment: { body: string }) =>
+        comment.body.includes(`Request ID: ${requestData.comment.id}`) && comment.body.includes("Decision: ACCEPTED"),
+      ));
+    });
+
     it("requires a reason for changes, records review history, supports resubmission, and approves", async () => {
       const copy = "The workspace helps teams coordinate projects.";
       const draft = await createDraft("Review workflow test", copy, true);
