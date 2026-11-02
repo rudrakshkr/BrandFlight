@@ -3249,6 +3249,45 @@ button:not(:disabled):active { transform: translateY(1px); }
 .bf-override-message-content p strong { color: #7c4e17; }
 .bf-override-message-meta { color: #8c6d41; }
 
+/* Reviewer change requests are actionable workflow messages, not ordinary chat comments. */
+.bf-review-comment-request,
+.bf-discussion-comment-request,
+.bf-creator-feedback-item-request {
+  border: 1px solid #efc6ad !important;
+  border-left: 4px solid #bd6d3b !important;
+  background: #fff7f1 !important;
+  box-shadow: 0 2px 7px rgba(150, 79, 36, .05);
+}
+.bf-change-request-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin: 8px 0 3px;
+  padding: 4px 8px;
+  border: 1px solid #efc6ad;
+  border-radius: 5px;
+  background: #fbe8dc;
+  color: #8e4b27;
+  font-size: 10.5px;
+  font-weight: 850;
+  letter-spacing: .045em;
+  text-transform: uppercase;
+}
+.bf-change-request-content,
+.bf-change-request-note {
+  margin: 8px 0 0 !important;
+  padding: 9px 11px;
+  border: 1px solid rgba(224, 166, 128, .3);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .78);
+  color: #67442f !important;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.bf-change-request-content p { margin: 0 !important; color: inherit !important; white-space: pre-wrap; }
+
 /* Clear progress feedback while a reviewer opens a campaign. */
 .bf-review-page { width: 100%; max-width: 1500px; }
 .bf-review-layout { grid-template-columns: minmax(320px, 390px) minmax(0, 1fr); gap: 20px; }
@@ -5953,4 +5992,443 @@ input[type="reset"] {
 @media (max-width: 600px) {
   .bf-change-media-grid { grid-template-columns: 1fr; }
   .bf-change-media-heading { align-items: flex-start; flex-direction: column; }
+}
+
+/* Round 3: clearer revision context and workspace feedback. */
+.bf-saved-page {
+  width: 100%;
+  max-width: 1580px;
+  margin-inline: auto;
+}
+.bf-saved-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 18px;
+}
+.bf-saved-card {
+  padding: 18px;
+}
+
+/* Make copy refinement a distinct primary action. */
+.bf-btn-primary.bf-refine-copy-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding-inline: 16px;
+  border: 1px solid #1b7967;
+  background: linear-gradient(135deg, #17685c, #248b72);
+  color: #fff;
+  box-shadow: 0 5px 14px rgba(23, 104, 92, .18);
+}
+.bf-btn-primary.bf-refine-copy-button:hover:not(:disabled) {
+  border-color: #115a50;
+  background: linear-gradient(135deg, #115a50, #1c7865);
+  box-shadow: 0 7px 18px rgba(23, 104, 92, .24);
+  transform: translateY(-1px);
+}
+.bf-refine-copy-button:disabled {
+  opacity: .72;
+  cursor: wait;
+}
+.bf-refine-button-spark {
+  display: inline-grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  border-radius: 6px;
+  background: rgba(255,255,255,.16);
+  font-size: 15px;
+}
+.bf-refine-progress {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+  margin-top: 10px;
+  padding: 13px 14px 17px;
+  border: 1px solid #c8e1d5;
+  border-radius: 10px;
+  background: linear-gradient(110deg, #f1faf5 0%, #e7f5ee 45%, #f7fbf8 100%);
+  animation: bf-refine-enter .28s ease-out both;
+}
+.bf-refine-progress-mark {
+  display: grid;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid #c3e0d1;
+  border-radius: 10px;
+  background: #fff;
+  color: #16715c;
+  font-size: 19px;
+  animation: bf-refine-sparkle 1.4s ease-in-out infinite;
+}
+.bf-refine-progress-copy { display: grid; gap: 3px; min-width: 0; }
+.bf-refine-progress-copy strong { color: #205a47; font-size: 12.5px; }
+.bf-refine-progress-copy p { margin: 0; color: #5b7869; font-size: 11.5px; line-height: 1.45; }
+.bf-refine-progress-orbit {
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+  border: 2px solid #c5e0d1;
+  border-top-color: #25846b;
+  border-radius: 50%;
+  animation: bf-refine-spin .8s linear infinite;
+}
+.bf-refine-progress-track {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  overflow: hidden;
+  background: #dceee4;
+}
+.bf-refine-progress-track i {
+  display: block;
+  width: 38%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #4aa687, #176b5b);
+  animation: bf-refine-scan 1.35s ease-in-out infinite;
+}
+
+/* Full-screen transition while moving between demo roles. */
+.bf-session-switch-overlay {
+  position: fixed;
+  z-index: 15000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(14, 28, 23, .46);
+  backdrop-filter: blur(7px);
+  animation: bf-session-fade-in .2s ease-out both;
+}
+.bf-session-switch-card {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  width: min(100%, 360px);
+  padding: 31px 28px 29px;
+  overflow: hidden;
+  border: 1px solid rgba(207, 231, 218, .9);
+  border-radius: 20px;
+  background: #fbfefc;
+  box-shadow: 0 28px 90px rgba(6, 24, 17, .28);
+  text-align: center;
+  animation: bf-session-card-in .32s cubic-bezier(.2,.8,.2,1) both;
+}
+.bf-session-switch-mark {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  margin-bottom: 16px;
+  border: 1px solid #cce5d8;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #eaf7f0, #fff);
+  color: #176b59;
+  font-size: 27px;
+  animation: bf-refine-sparkle 1.4s ease-in-out infinite;
+}
+.bf-session-switch-eyebrow {
+  color: #5e8875;
+  font-size: 9.5px;
+  font-weight: 850;
+  letter-spacing: .16em;
+}
+.bf-session-switch-card h2 {
+  margin: 8px 0 5px;
+  color: #1c3529;
+  font-size: 22px;
+  letter-spacing: -.025em;
+}
+.bf-session-switch-card p {
+  margin: 0;
+  color: #64786c;
+  font-size: 13px;
+}
+.bf-session-switch-track {
+  width: 100%;
+  height: 4px;
+  margin-top: 23px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: #e5efe9;
+}
+.bf-session-switch-track i {
+  display: block;
+  width: 34%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #8ac9aa, #176b59);
+  animation: bf-refine-scan 1.15s ease-in-out infinite;
+}
+
+/* Queue state after a review decision commits and the list is refreshed. */
+.bf-review-queue-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 15px;
+  min-height: 360px;
+  padding: 30px;
+  border: 1px dashed #d4e3d9;
+  border-radius: 12px;
+  background: linear-gradient(140deg, #fbfdfb, #f3f8f4);
+}
+.bf-review-queue-loading .bf-loading-spinner {
+  flex: 0 0 25px;
+  width: 25px;
+  height: 25px;
+  border: 2px solid #d7e8dd;
+  border-top-color: #267963;
+  border-radius: 50%;
+  animation: bf-refine-spin .8s linear infinite;
+}
+.bf-review-queue-loading strong {
+  display: block;
+  color: #294638;
+  font-size: 14px;
+}
+.bf-review-queue-loading p {
+  margin: 4px 0 0;
+  color: #718278;
+  font-size: 12px;
+}
+
+/* Live character count for review notes. */
+.bf-review-comment-meter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: -2px;
+  color: #7a887f;
+  font-size: 10.5px;
+}
+.bf-review-comment-meter output,
+.bf-submit-review-counter-row output {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 83px;
+  padding: 4px 8px;
+  border: 1px solid;
+  border-radius: 999px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+.bf-review-comment-meter output.is-valid,
+.bf-submit-review-counter-row output.is-valid {
+  border-color: #b9dfc8;
+  background: #edf8f0;
+  color: #267345;
+}
+.bf-review-comment-meter output.is-invalid,
+.bf-submit-review-counter-row output.is-invalid {
+  border-color: #edc9c3;
+  background: #fff2f0;
+  color: #a33d32;
+}
+
+/* Creator revision summary is distinct from ordinary discussion and review feedback. */
+.bf-creator-update-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 9px;
+  padding: 5px 9px;
+  border: 1px solid #c9dce9;
+  border-radius: 999px;
+  background: #eff6fb;
+  color: #35617e;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .045em;
+  text-transform: uppercase;
+}
+.bf-creator-update-content {
+  margin-top: 8px;
+  padding: 12px 13px;
+  border: 1px solid #d2e1eb;
+  border-left: 3px solid #5682a0;
+  border-radius: 8px;
+  background: linear-gradient(110deg, #f4f8fb, #fbfdff);
+}
+.bf-creator-update-content p {
+  margin: 0;
+  color: #304c60;
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.bf-review-comment-update {
+  border-color: #d3e2eb;
+  background: #f8fbfd;
+}
+.bf-discussion-comment-update {
+  border-color: #d3e2eb;
+  background: #f8fbfd;
+}
+
+/* Submission summary modal. */
+.bf-submit-review-backdrop {
+  position: fixed;
+  z-index: 11000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  padding: 22px;
+  background: rgba(14, 24, 19, .55);
+  backdrop-filter: blur(5px);
+  animation: bf-session-fade-in .18s ease-out both;
+}
+.bf-submit-review-dialog {
+  width: min(100%, 540px);
+  padding: 25px;
+  border: 1px solid #dce8df;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 26px 80px rgba(16, 36, 25, .25);
+  animation: bf-session-card-in .25s cubic-bezier(.2,.8,.2,1) both;
+}
+.bf-submit-review-eyebrow {
+  color: #4d8770;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .14em;
+}
+.bf-submit-review-dialog h2 {
+  margin: 8px 0 7px;
+  color: #20392c;
+  font-size: 22px;
+  letter-spacing: -.025em;
+}
+.bf-submit-review-dialog > p {
+  margin: 0;
+  color: #6c7c72;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.bf-submit-review-campaign {
+  display: grid;
+  gap: 4px;
+  margin-top: 17px;
+  padding: 11px 13px;
+  border: 1px solid #e1eae4;
+  border-radius: 9px;
+  background: #f7faf8;
+}
+.bf-submit-review-campaign span {
+  color: #7c8b82;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.bf-submit-review-campaign strong {
+  color: #345342;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.bf-submit-review-form {
+  display: grid;
+  gap: 9px;
+  margin-top: 17px;
+}
+.bf-submit-review-form label {
+  color: #40594b;
+  font-size: 12px;
+  font-weight: 800;
+}
+.bf-submit-review-form textarea {
+  width: 100%;
+  min-height: 116px;
+  resize: vertical;
+  padding: 11px 12px;
+  border: 1px solid #d6e2da;
+  border-radius: 9px;
+  background: #fff;
+  color: #263b2f;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.bf-submit-review-form textarea:focus {
+  outline: none;
+  border-color: #7eaf99;
+  box-shadow: 0 0 0 3px rgba(54, 132, 94, .1);
+}
+.bf-submit-review-counter-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  color: #829087;
+  font-size: 10.5px;
+}
+.bf-submit-review-error {
+  margin: 0;
+  color: #a33d32;
+  font-size: 11.5px;
+}
+.bf-submit-review-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 7px;
+}
+@keyframes bf-refine-spin { to { transform: rotate(360deg); } }
+@keyframes bf-refine-sparkle {
+  0%, 100% { transform: scale(1) rotate(0deg); opacity: 1; }
+  50% { transform: scale(1.08) rotate(12deg); opacity: .78; }
+}
+@keyframes bf-refine-scan {
+  0% { transform: translateX(-115%); }
+  100% { transform: translateX(310%); }
+}
+@keyframes bf-refine-enter {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes bf-session-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes bf-session-card-in {
+  from { opacity: 0; transform: translateY(12px) scale(.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@media (max-width: 560px) {
+  .bf-saved-grid { grid-template-columns: minmax(0, 1fr); }
+  .bf-submit-review-backdrop { padding: 10px; }
+  .bf-submit-review-dialog { padding: 18px; }
+  .bf-submit-review-actions { flex-direction: column-reverse; }
+  .bf-submit-review-actions button { width: 100%; }
+  .bf-review-comment-meter { align-items: flex-end; }
+  .bf-review-comment-meter > span { max-width: 65%; line-height: 1.4; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bf-refine-progress,
+  .bf-refine-progress-mark,
+  .bf-refine-progress-orbit,
+  .bf-refine-progress-track i,
+  .bf-session-switch-overlay,
+  .bf-session-switch-card,
+  .bf-session-switch-mark,
+  .bf-session-switch-track i,
+  .bf-review-queue-loading .bf-loading-spinner,
+  .bf-submit-review-backdrop,
+  .bf-submit-review-dialog {
+    animation: none !important;
+  }
 }

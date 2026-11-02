@@ -96,6 +96,9 @@ export default function SavedSubmissionsPanel({
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [tagFilter, setTagFilter] = useState('ALL')
   const [notice, setNotice] = useState<string | null>(null)
+  const [pendingSubmit, setPendingSubmit] = useState<SubmissionSummary | null>(null)
+  const [submitSummary, setSubmitSummary] = useState('')
+  const [submitDialogError, setSubmitDialogError] = useState<string | null>(null)
   const [discussion, setDiscussion] = useState<SubmissionDetail | null>(null)
   const [discussionLoadingId, setDiscussionLoadingId] = useState<string | null>(null)
   const [discussionText, setDiscussionText] = useState('')
@@ -261,17 +264,33 @@ export default function SavedSubmissionsPanel({
     }
   }
 
-  const handleSubmitForReview = async (item: SubmissionSummary) => {
-    if (item.status !== 'DRAFT' && item.status !== 'CHANGES_REQUESTED') return
+  const handleSubmitForReview = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!pendingSubmit || submittingId) return
 
+    const summary = submitSummary.trim()
+    if (summary.length < 10 || summary.length > 1000) {
+      setSubmitDialogError('Enter a change summary between 10 and 1,000 characters.')
+      return
+    }
+
+    const item = pendingSubmit
     setSubmittingId(item.id)
+    setSubmitDialogError(null)
     setError(null)
     setNotice(null)
 
     try {
       const response = await fetch(
         `${apiBaseUrl}/api/submissions/${encodeURIComponent(item.id)}/submit`,
-        { method: 'POST', headers: { Authorization: `Bearer ${token}` } },
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ changeSummary: summary }),
+        },
       )
       const data = (await response.json().catch(() => null)) as {
         submission?: { id: string; status: string }
@@ -282,10 +301,12 @@ export default function SavedSubmissionsPanel({
         throw new Error(data?.error ?? `Submission failed (HTTP ${response.status}).`)
       }
 
+      setPendingSubmit(null)
+      setSubmitSummary('')
       setNotice(`“${item.title}” was submitted for review.`)
       await loadSubmissions()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to submit for review.')
+      setSubmitDialogError(err instanceof Error ? err.message : 'Unable to submit for review.')
     } finally {
       setSubmittingId(null)
     }
@@ -524,8 +545,17 @@ export default function SavedSubmissionsPanel({
                           <button type="button" className="bf-btn-secondary" disabled={busy || isEditing} onClick={() => void handleOpen(item)}>
                             {openingId === item.id ? 'Opening…' : 'Open Draft'}
                           </button>
-                          <button type="button" className="bf-btn-primary" disabled={busy || isEditing} onClick={() => void handleSubmitForReview(item)}>
-                            {submittingId === item.id ? 'Submitting…' : 'Submit for Review'}
+                          <button
+                            type="button"
+                            className="bf-btn-primary"
+                            disabled={busy || isEditing}
+                            onClick={() => {
+                              setPendingSubmit(item)
+                              setSubmitSummary('')
+                              setSubmitDialogError(null)
+                            }}
+                          >
+                            Submit for Review
                           </button>
                         </div>
                       ) : (
@@ -540,6 +570,83 @@ export default function SavedSubmissionsPanel({
             </div>
           )}
         </>
+      )}
+      {pendingSubmit && (
+        <div
+          className="bf-submit-review-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && submittingId !== pendingSubmit.id) {
+              setPendingSubmit(null)
+              setSubmitSummary('')
+              setSubmitDialogError(null)
+            }
+          }}
+        >
+          <section
+            className="bf-submit-review-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="bf-submit-review-title"
+            aria-describedby="bf-submit-review-description"
+          >
+            <span className="bf-submit-review-eyebrow">SUBMISSION SUMMARY</span>
+            <h2 id="bf-submit-review-title">What changed in this version?</h2>
+            <p id="bf-submit-review-description">
+              Give the reviewer or manager a brief summary of the updates you made. This note will be saved
+              to the campaign activity and shown with the submission.
+            </p>
+            <div className="bf-submit-review-campaign">
+              <span>Campaign</span>
+              <strong>{pendingSubmit.title}</strong>
+            </div>
+            <form className="bf-submit-review-form" onSubmit={(event) => void handleSubmitForReview(event)}>
+              <label htmlFor="bf-submit-review-summary">Changes made</label>
+              <textarea
+                id="bf-submit-review-summary"
+                rows={5}
+                minLength={10}
+                maxLength={1000}
+                required
+                value={submitSummary}
+                onChange={(event) => {
+                  setSubmitSummary(event.target.value)
+                  setSubmitDialogError(null)
+                }}
+                placeholder="For example: Updated the headline, replaced the unverified statistic, and added descriptive alt text."
+                disabled={submittingId === pendingSubmit.id}
+                autoFocus
+              />
+              <div className="bf-submit-review-counter-row">
+                <span>10 characters minimum · 1,000 maximum</span>
+                <output className={submitSummary.trim().length >= 10 && submitSummary.length <= 1000 ? 'is-valid' : 'is-invalid'}>
+                  {submitSummary.length.toLocaleString()} / 1,000
+                </output>
+              </div>
+              {submitDialogError && <p className="bf-submit-review-error" role="alert">{submitDialogError}</p>}
+              <div className="bf-submit-review-actions">
+                <button
+                  type="button"
+                  className="bf-btn-secondary"
+                  disabled={submittingId === pendingSubmit.id}
+                  onClick={() => {
+                    setPendingSubmit(null)
+                    setSubmitSummary('')
+                    setSubmitDialogError(null)
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="bf-btn-primary"
+                  disabled={submittingId === pendingSubmit.id || submitSummary.trim().length < 10 || submitSummary.length > 1000}
+                >
+                  {submittingId === pendingSubmit.id ? 'Submitting…' : 'Send to review'}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
       )}
       {discussion && (
         <div className="bf-discussion-backdrop">
@@ -586,13 +693,27 @@ export default function SavedSubmissionsPanel({
                   <p>Reviewer and manager comments will appear here as soon as they are posted. You can also leave a comment for the review team.</p>
                 </div>
               ) : discussion.comments.map((comment) => (
-                <article className={`bf-discussion-comment${comment.body.startsWith('OVERRIDE REQUEST') ? ' bf-discussion-comment-override' : ''}`} key={comment.id}>
+                <article className={`bf-discussion-comment${comment.body.startsWith('OVERRIDE REQUEST') ? ' bf-discussion-comment-override' : ''}${comment.body.startsWith('CHANGE REQUEST') ? ' bf-discussion-comment-request' : ''}${comment.body.startsWith('CREATOR UPDATE') ? ' bf-discussion-comment-update' : ''}`} key={comment.id}>
                   <div className="bf-discussion-comment-meta">
                     <strong>{comment.author?.name ?? 'Workspace member'}</strong>
                     <span>{comment.author?.role ?? 'User'}</span>
                     <time dateTime={comment.createdAt}>{new Date(comment.createdAt).toLocaleString()}</time>
                   </div>
-                  {comment.body.startsWith('OVERRIDE REQUEST') ? (
+                  {comment.body.startsWith('CREATOR UPDATE') ? (
+                    <>
+                      <span className="bf-creator-update-badge">Creator revision summary</span>
+                      <div className="bf-creator-update-content">
+                        <p>{comment.body.split('\n').slice(1).join('\n').trim()}</p>
+                      </div>
+                    </>
+                  ) : comment.body.startsWith('CHANGE REQUEST') ? (
+                    <>
+                      <span className="bf-change-request-badge">Changes requested · action required</span>
+                      <div className="bf-change-request-content">
+                        <p>{comment.body.split('\n').slice(1).join('\n').trim()}</p>
+                      </div>
+                    </>
+                  ) : comment.body.startsWith('OVERRIDE REQUEST') ? (
                     <>
                       <span className="bf-override-message-badge">Creator override request</span>
                       <div className="bf-override-message-content">

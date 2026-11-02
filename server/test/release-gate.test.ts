@@ -37,8 +37,8 @@ test("AI-detected high-risk findings require a meaningful human override, not an
 
 test("short override reasons are rejected", () => {
   const gate = evaluateReleaseGate([{ severity: "WARNING", title: "Contrast needs manual review" }]);
-  assert.ok(MIN_REVIEWER_OVERRIDE_LENGTH >= 20);
-  assert.ok(getReleaseGateApprovalError(gate, "Looks fine"));
+  assert.equal(MIN_REVIEWER_OVERRIDE_LENGTH, 10);
+  assert.ok(getReleaseGateApprovalError(gate, "Too short"));
 });
 
 test("warnings require an explicit reviewer override reason", () => {
@@ -76,4 +76,9 @@ test("duplicate receipt findings are listed only once", () => {
     { severity: "WARNING", category: "ACCESSIBILITY", ruleCode: "ACCESSIBILITY-02", title: "Text contrast needs manual review" },
   ]);
   assert.equal(gate.warnings.length, 1);
+});
+
+test("a 10-character reviewer reason satisfies the override minimum", () => {
+  const gate = evaluateReleaseGate([{ severity: "WARNING", title: "Contrast needs manual review" }]);
+  assert.equal(getReleaseGateApprovalError(gate, "1234567890"), null);
 });

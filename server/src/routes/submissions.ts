@@ -2,7 +2,7 @@ import { Router, type Response } from "express";
 import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { auditConfigHash, imageAuditInputHash, sha256Text } from "../lib/audit-receipts.js";
-import { validateReviewDecision } from "../lib/review-validation.js";
+import { validateCreatorUpdateSummary, validateReviewDecision } from "../lib/review-validation.js";
 import { evaluateReleaseGate, formatReviewerOverrideComment, getReleaseGateApprovalError } from "../lib/release-gate.js";
 import { canonicalJson, createReleasePassport, verifyReleasePassportHash, type ReleasePassportSnapshot } from "../lib/release-passport.js";
 import {
@@ -1016,6 +1016,15 @@ submissionsRouter.post(
   requireAuth,
   requireRoles("CREATOR"),
   async (req, res) => {
+    const requestBody: unknown = req.body;
+    const updateValidation = validateCreatorUpdateSummary(
+      isRecord(requestBody) ? requestBody.changeSummary : undefined,
+    );
+    if (!updateValidation.valid) {
+      return res.status(400).json({ error: updateValidation.error });
+    }
+    const changeSummary = updateValidation.summary;
+
     try {
       const current = await prisma.submission.findUnique({
         where: { id: getRouteParam(req.params.id) },
@@ -1070,23 +1079,37 @@ submissionsRouter.post(
         }
       }
 
-      // Prevent a concurrent edit from slipping between receipt validation and status transition.
-      const changed = await prisma.submission.updateMany({
-        where: {
-          id: current.id,
-          creatorId: current.creatorId,
-          status: current.status,
-          brandProfileId: current.brandProfileId,
-          contentText: current.contentText,
-          textAuditReceiptId: current.textAuditReceiptId,
-          imageUrl: current.imageUrl,
-          imagePublicId: current.imagePublicId,
-          imageAltText: current.imageAltText,
-          imageAuditReceiptId: current.imageAuditReceiptId,
-        },
-        data: { status: "IN_REVIEW" },
-      });
-      if (changed.count !== 1) {
+      // Keep the status transition and creator's revision summary atomic. Receipt
+      // validation and asset checks stay outside this short transaction.
+      const submitResult = await prisma.$transaction(async (tx) => {
+        const changed = await tx.submission.updateMany({
+          where: {
+            id: current.id,
+            creatorId: current.creatorId,
+            status: current.status,
+            brandProfileId: current.brandProfileId,
+            contentText: current.contentText,
+            textAuditReceiptId: current.textAuditReceiptId,
+            imageUrl: current.imageUrl,
+            imagePublicId: current.imagePublicId,
+            imageAltText: current.imageAltText,
+            imageAuditReceiptId: current.imageAuditReceiptId,
+          },
+          data: { status: "IN_REVIEW" },
+        });
+        if (changed.count !== 1) return { conflict: true as const };
+
+        await tx.comment.create({
+          data: {
+            body: `CREATOR UPDATE\n${changeSummary}`,
+            submissionId: current.id,
+            authorId: req.authUser!.id,
+          },
+        });
+        return { conflict: false as const };
+      }, { maxWait: 10_000, timeout: 20_000 });
+
+      if (submitResult.conflict) {
         return res.status(409).json({ error: "The campaign changed while its audits were being verified. Run the audits again and submit the latest version." });
       }
 
@@ -1288,9 +1311,11 @@ submissionsRouter.post(
         if (typeof note === "string" && note.trim()) {
           await tx.comment.create({
             data: {
-              body: approvalRequiresOverride && approvalReleaseGate && note
-                ? formatReviewerOverrideComment(note, approvalReleaseGate)
-                : note.trim(),
+              body: status === "CHANGES_REQUESTED"
+                ? `CHANGE REQUEST\n${note.trim()}`
+                : approvalRequiresOverride && approvalReleaseGate && note
+                  ? formatReviewerOverrideComment(note, approvalReleaseGate)
+                  : note.trim(),
               submissionId: current.id,
               authorId: req.authUser!.id,
             },
@@ -1307,12 +1332,8 @@ submissionsRouter.post(
           });
         }
 
-        const submission = await tx.submission.findUnique({
-          where: { id: current.id },
-          include: submissionDetails,
-        });
-        return { conflict: false as const, submission };
-      });
+        return { conflict: false as const };
+      }, { maxWait: 10_000, timeout: 20_000 });
 
       if (reviewResult.conflict) {
         return res.status(409).json({
@@ -1320,7 +1341,13 @@ submissionsRouter.post(
         });
       }
 
-      return res.json({ submission: reviewResult.submission });
+      // Fetch the response payload after commit so the interactive transaction
+      // only covers the atomic status/comment/passport writes.
+      const submission = await prisma.submission.findUnique({
+        where: { id: current.id },
+        include: submissionDetails,
+      });
+      return res.json({ submission });
     } catch (error) {
       return handleError(res, error, "Unable to record review decision.");
     }
@@ -1335,9 +1362,9 @@ submissionsRouter.post("/:id/comments", requireAuth, async (req, res) => {
       error: "Comment body is required and must be at most 2,000 characters.",
     });
   }
-  if (/^REVIEWER OVERRIDE\b/i.test(body.body.trim())) {
+  if (/^(?:REVIEWER OVERRIDE|CHANGE REQUEST)\b/i.test(body.body.trim())) {
     return res.status(400).json({
-      error: "Reviewer override records are created only by the approval workflow.",
+      error: "Review decision records are created only by the review workflow.",
     });
   }
 

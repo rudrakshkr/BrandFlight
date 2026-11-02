@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateReviewDecision } from "../src/lib/review-validation.js";
+import { validateCreatorUpdateSummary, validateReviewDecision } from "../src/lib/review-validation.js";
 
 test("approval may omit a note", () => {
   assert.deepEqual(validateReviewDecision("APPROVED", undefined), {
@@ -17,11 +17,11 @@ test("approval trims and retains an optional note", () => {
   });
 });
 
-test("change requests require a non-empty reason", () => {
-  for (const note of [undefined, "", "   "]) {
+test("change requests require at least 10 characters of actionable feedback", () => {
+  for (const note of [undefined, "", "   ", "Too short"]) {
     const result = validateReviewDecision("CHANGES_REQUESTED", note);
     assert.equal(result.valid, false);
-    if (!result.valid) assert.match(result.error, /reason is required/i);
+    if (!result.valid) assert.match(result.error, /at least 10 characters/i);
   }
 });
 
@@ -37,4 +37,13 @@ test("invalid statuses, non-string notes, and oversized notes are rejected", () 
   assert.equal(validateReviewDecision("DRAFT", "note").valid, false);
   assert.equal(validateReviewDecision("APPROVED", 42).valid, false);
   assert.equal(validateReviewDecision("APPROVED", "x".repeat(2001)).valid, false);
+});
+
+test("creator update summaries require 10 to 1,000 characters and are trimmed", () => {
+  assert.deepEqual(validateCreatorUpdateSummary("  Updated the headline and fixed the claim.  "), {
+    valid: true,
+    summary: "Updated the headline and fixed the claim.",
+  });
+  assert.equal(validateCreatorUpdateSummary("123456789").valid, false);
+  assert.equal(validateCreatorUpdateSummary("x".repeat(1001)).valid, false);
 });

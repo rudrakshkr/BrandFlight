@@ -12,6 +12,12 @@ if (!testDatabaseUrl) {
 } else {
   describe("BrandFlight HTTP API integration", { concurrency: false }, () => {
     const runId = randomUUID().replaceAll("-", "").slice(0, 12);
+    const imageFixture = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/SioAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const nativeFetch = globalThis.fetch.bind(globalThis);
+    let cloudinaryUploadCount = 0;
     const brandId = `brandflight-test-${runId}`;
     const password = "integration-test-password-not-for-production";
     const createdSubmissionIds: string[] = [];
@@ -120,6 +126,7 @@ if (!testDatabaseUrl) {
       ) => new Writable({
         write(_chunk, _encoding, done) { done(); },
         final(done) {
+          cloudinaryUploadCount += 1;
           callback(null, {
             secure_url: `https://res.cloudinary.com/test-cloud/image/upload/${runId}/campaign.png`,
             public_id: `${runId}/campaign`,
@@ -128,6 +135,16 @@ if (!testDatabaseUrl) {
         },
       });
       (cloudinary.uploader as unknown as { upload_stream: typeof testUploadStream }).upload_stream = testUploadStream;
+      globalThis.fetch = (async (input, init) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.startsWith("https://res.cloudinary.com/test-cloud/image/upload/")) {
+          return new Response(imageFixture, {
+            status: 200,
+            headers: { "content-type": "image/png", "content-length": String(imageFixture.byteLength) },
+          });
+        }
+        return nativeFetch(input, init);
+      }) as typeof fetch;
 
       ({ app } = await import("../src/index.js"));
       ({ prisma } = await import("../src/lib/prisma.js"));
@@ -227,6 +244,7 @@ if (!testDatabaseUrl) {
     });
 
     after(async () => {
+      globalThis.fetch = nativeFetch;
       if (httpServer) {
         await new Promise<void>((resolve) => httpServer.close(() => resolve()));
       }
@@ -298,26 +316,71 @@ if (!testDatabaseUrl) {
       assert.equal(data.semanticStatus, "unavailable");
     });
 
-    it("runs an image audit through a mocked Cloudinary upload", async () => {
-      const png = Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/SioAAAAASUVORK5CYII=",
-        "base64",
-      );
+    it("re-audits a saved draft image after an alt-text-only edit without uploading it again", async () => {
+      const originalAltText = "Blue campaign banner with a product launch headline";
       const form = new FormData();
       form.set("brandProfileId", brandId);
-      form.set("altText", "Blue campaign banner with a product launch headline");
-      form.set("image", new Blob([png], { type: "image/png" }), "campaign.png");
+      form.set("altText", originalAltText);
+      form.set("image", new Blob([imageFixture], { type: "image/png" }), "campaign.png");
 
-      const response = await fetch(`${baseUrl}/api/audit/image`, {
+      const firstResponse = await fetch(`${baseUrl}/api/audit/image`, {
         method: "POST",
         headers: { Authorization: `Bearer ${creatorToken}` },
         body: form,
       });
-      const data = await response.json().catch(() => null);
-      assert.equal(response.status, 200, JSON.stringify(data));
-      assert.ok(data.auditReceiptId);
-      assert.equal(data.image.format, "png");
-      assert.ok(data.asset.secureUrl.startsWith("https://res.cloudinary.com/test-cloud/"));
+      const firstAudit = await firstResponse.json().catch(() => null);
+      assert.equal(firstResponse.status, 200, JSON.stringify(firstAudit));
+      assert.ok(firstAudit.auditReceiptId);
+      assert.equal(firstAudit.image.format, "png");
+      assert.equal(cloudinaryUploadCount, 1);
+
+      const draft = await createDraft("Saved image re-audit test", "The campaign introduces a new product.", true);
+      const { response: attachResponse, data: attachData } = await requestJson(`/api/submissions/${draft.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          imageName: firstAudit.image.name,
+          imageAltText: originalAltText,
+          imageUrl: firstAudit.asset.secureUrl,
+          imagePublicId: firstAudit.asset.publicId,
+          imageAuditReceiptId: firstAudit.auditReceiptId,
+          imageAuditData: firstAudit,
+        }),
+      }, creatorToken);
+      assert.equal(attachResponse.status, 200, JSON.stringify(attachData));
+
+      const updatedAltText = "Blue product launch banner with a headline and call to action";
+      const reAuditForm = new FormData();
+      reAuditForm.set("brandProfileId", brandId);
+      reAuditForm.set("altText", updatedAltText);
+      reAuditForm.set("submissionId", draft.id);
+      const uploadCountBeforeReuse = cloudinaryUploadCount;
+
+      const reAuditResponse = await fetch(`${baseUrl}/api/audit/image`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${creatorToken}` },
+        body: reAuditForm,
+      });
+      const reAudit = await reAuditResponse.json().catch(() => null);
+      assert.equal(reAuditResponse.status, 200, JSON.stringify(reAudit));
+      assert.notEqual(reAudit.auditReceiptId, firstAudit.auditReceiptId);
+      assert.equal(reAudit.asset.publicId, firstAudit.asset.publicId);
+      assert.equal(reAudit.asset.secureUrl, firstAudit.asset.secureUrl);
+      assert.equal(cloudinaryUploadCount, uploadCountBeforeReuse, "Re-auditing a saved image must not upload a duplicate asset.");
+
+      const { response: updateResponse, data: updateData } = await requestJson(`/api/submissions/${draft.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          imageName: reAudit.image.name,
+          imageAltText: updatedAltText,
+          imageUrl: reAudit.asset.secureUrl,
+          imagePublicId: reAudit.asset.publicId,
+          imageAuditReceiptId: reAudit.auditReceiptId,
+          imageAuditData: reAudit,
+        }),
+      }, creatorToken);
+      assert.equal(updateResponse.status, 200, JSON.stringify(updateData));
+      assert.equal(updateData.submission.imageAltText, updatedAltText);
+      assert.equal(updateData.submission.imageAuditReceiptId, reAudit.auditReceiptId);
     });
 
     it("persists drafts and rejects submission after the audited copy becomes stale", async () => {
@@ -338,7 +401,7 @@ if (!testDatabaseUrl) {
 
       const { response: submitResponse, data: submitData } = await requestJson(`/api/submissions/${draft.id}/submit`, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ changeSummary: "Updated the copy and checked the latest campaign details." }),
       }, creatorToken);
       assert.equal(submitResponse.status, 409);
       assert.match(submitData.error, /text audit is missing or stale/i);
@@ -373,17 +436,20 @@ if (!testDatabaseUrl) {
       const draft = await createDraft("Review workflow test", copy, true);
       const { response: submitResponse, data: submitData } = await requestJson(`/api/submissions/${draft.id}/submit`, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ changeSummary: "Updated the copy and checked the latest campaign details." }),
       }, creatorToken);
       assert.equal(submitResponse.status, 200, JSON.stringify(submitData));
       assert.equal(submitData.submission.status, "IN_REVIEW");
+      assert.ok(submitData.submission.comments.some((comment: { body: string }) =>
+        comment.body.startsWith("CREATOR UPDATE\nUpdated the copy"),
+      ));
 
       const { response: emptyReasonResponse, data: emptyReasonData } = await requestJson(`/api/submissions/${draft.id}/review`, {
         method: "POST",
         body: JSON.stringify({ status: "CHANGES_REQUESTED", note: "   " }),
       }, reviewerToken);
       assert.equal(emptyReasonResponse.status, 400);
-      assert.match(emptyReasonData.error, /reason is required/i);
+      assert.match(emptyReasonData.error, /at least 10 characters/i);
 
       const reason = "Please remove the unsupported performance claim and explain the source for the statistic.";
       const { response: changeResponse, data: changeData } = await requestJson(`/api/submissions/${draft.id}/review`, {
@@ -392,7 +458,7 @@ if (!testDatabaseUrl) {
       }, reviewerToken);
       assert.equal(changeResponse.status, 200, JSON.stringify(changeData));
       assert.equal(changeData.submission.status, "CHANGES_REQUESTED");
-      assert.ok(changeData.submission.comments.some((comment: { body: string }) => comment.body === reason));
+      assert.ok(changeData.submission.comments.some((comment: { body: string }) => comment.body === `CHANGE REQUEST\n${reason}`));
 
       const changedCopy = "The workspace supports teams as they coordinate projects.";
       const refreshedReceiptId = await successfulTextReceipt(changedCopy);
@@ -405,7 +471,7 @@ if (!testDatabaseUrl) {
 
       const { response: resubmitResponse, data: resubmitData } = await requestJson(`/api/submissions/${draft.id}/submit`, {
         method: "POST",
-        body: JSON.stringify({}),
+        body: JSON.stringify({ changeSummary: "Updated the copy and checked the latest campaign details." }),
       }, creatorToken);
       assert.equal(resubmitResponse.status, 200, JSON.stringify(resubmitData));
       assert.equal(resubmitData.submission.status, "IN_REVIEW");

@@ -439,6 +439,7 @@ export function App() {
     isError: boolean
   } | null>(null)
   const [auditedImageAltText, setAuditedImageAltText] = useState<string | null>(null)
+  const canReauditSavedImage = Boolean(editingSubmissionId && !imageFile && imagePreviewUrl)
   const [overrideTarget, setOverrideTarget] = useState<{ groupId: string; title: string; ruleCodes: string[]; evidences: string[] } | null>(null)
   const [overrideReason, setOverrideReason] = useState('')
   const [overrideBusy, setOverrideBusy] = useState(false)
@@ -749,21 +750,23 @@ export function App() {
   const handleImageAuditSubmit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
 
-    if (!imageFile) {
-      setImageAuditError('Choose a PNG or JPEG image first.')
+    if (!imageFile && !canReauditSavedImage) {
+      setImageAuditError('Choose an image or open a saved draft that already has a campaign image.')
       return
     }
 
     setIsImageAuditing(true)
     setImageAuditError(null)
-    setImageAuditResult(null)
-    setAuditedImageAltText(null)
 
     try {
       const formData = new FormData()
       formData.append('brandProfileId', BRAND_PROFILE_ID)
       formData.append('altText', imageAltText.trim())
-      formData.append('image', imageFile)
+      if (imageFile) {
+        formData.append('image', imageFile)
+      } else if (editingSubmissionId) {
+        formData.append('submissionId', editingSubmissionId)
+      }
 
       const response = await fetch(`${API_BASE_URL}/api/audit/image`, {
         method: 'POST',
@@ -1815,12 +1818,24 @@ export function App() {
                         id="bf-editor-input"
                         className="bf-textarea"
                         value={content}
+                        disabled={refineBusy}
                         onChange={(e) => {
                           setContent(e.target.value)
                           setGuidanceCopyFeedback(null)
                         }}
                         placeholder="Paste or write marketing content to check against brand guidelines..."
                       />
+                      {refineBusy && (
+                        <div className="bf-refine-progress" role="status" aria-live="polite">
+                          <span className="bf-refine-progress-mark" aria-hidden="true">✦</span>
+                          <div className="bf-refine-progress-copy">
+                            <strong>Refining your campaign copy</strong>
+                            <p>Checking the wording against your brand voice, rules and approved facts.</p>
+                          </div>
+                          <span className="bf-refine-progress-orbit" aria-hidden="true" />
+                          <span className="bf-refine-progress-track" aria-hidden="true"><i /></span>
+                        </div>
+                      )}
                     </div>
 
                     {activeEvidences.length > 0 && (
@@ -1884,12 +1899,13 @@ export function App() {
 
                       <button
                         type="button"
-                        className="bf-btn-secondary bf-refine-copy-button"
+                        className="bf-btn-primary bf-refine-copy-button"
                         disabled={refineBusy || isAuditing || !content.trim() || authSession?.user.role !== 'CREATOR'}
                         onClick={() => void handleRefineCopy()}
-                        title="Ask Gemini to refine the copy against the active brand rules and approved facts. A fresh audit is still required."
+                        title="Refine the copy against active brand rules and approved facts. A fresh audit is still required."
                       >
-                        {refineBusy ? 'Refining copy…' : 'Refine copy'}
+                        <span className="bf-refine-button-spark" aria-hidden="true">✦</span>
+                        {refineBusy ? 'Refining…' : 'Refine copy'}
                       </button>
 
                       <button
@@ -1987,7 +2003,9 @@ export function App() {
                               <span className="bf-image-preview-help">
                                 {imageFile
                                   ? `${(imageFile.size / (1024 * 1024)).toFixed(2)} MB · Audit again before saving`
-                                  : 'Saved image · Click to replace'}
+                                  : canReauditSavedImage
+                                    ? 'Saved image · Edit alt text and re-audit without re-uploading'
+                                    : 'Saved image · Click to replace'}
                               </span>
                             </span>
                             <span className="bf-image-change-pill">Change image</span>
@@ -2004,7 +2022,7 @@ export function App() {
                         )}
                       </label>
                       <p className="bf-section-meta">
-                        Click the preview to replace the image. A replacement must be audited before saving.
+                        Click the preview to replace the image. For a saved draft, you can edit only the alt text and re-run the audit using the saved image; a replacement image must still be uploaded.
                       </p>
                     </div>
 
@@ -2030,9 +2048,13 @@ export function App() {
                       <button
                         type="submit"
                         className="bf-btn-primary"
-                        disabled={isImageAuditing || !imageFile}
+                        disabled={isImageAuditing || (!imageFile && !canReauditSavedImage)}
                       >
-                        {isImageAuditing ? 'Auditing image…' : 'Audit Image & Alt Text'}
+                        {isImageAuditing
+                          ? 'Auditing image…'
+                          : canReauditSavedImage
+                            ? 'Re-audit Saved Image & Alt Text'
+                            : 'Audit Image & Alt Text'}
                       </button>
                       <button
                         type="button"
@@ -2059,7 +2081,9 @@ export function App() {
                           <p>
                             {imageFile
                               ? 'Click Audit Image & Alt Text to check palette alignment and accessibility.'
-                              : 'Choose a PNG or JPEG image, add meaningful alt text, then click Audit Image & Alt Text. Results will appear here.'}
+                              : canReauditSavedImage
+                                ? 'Update the alt text, then re-run the audit. BrandFlight will reuse the image already saved with this draft.'
+                                : 'Choose a PNG or JPEG image, add meaningful alt text, then click Audit Image & Alt Text. Results will appear here.'}
                           </p>
                         </div>
                       </div>
@@ -2553,14 +2577,19 @@ export function App() {
                     {reviewerComments.length > 0 ? (
                       <div className="bf-creator-feedback-list">
                         {reviewerComments.map((comment) => (
-                          <article className="bf-creator-feedback-item" key={comment.id}>
+                          <article className={`bf-creator-feedback-item${comment.body.startsWith('CHANGE REQUEST') ? ' bf-creator-feedback-item-request' : ''}`} key={comment.id}>
                             <div className="bf-creator-feedback-heading">
                               <strong>{comment.author?.name ?? 'Reviewer'}</strong>
                               <span className="bf-creator-feedback-role">
                                 {comment.author?.role ?? 'REVIEWER'}
                               </span>
                             </div>
-                            <p className="bf-creator-feedback-note">{comment.body}</p>
+                            {comment.body.startsWith('CHANGE REQUEST') ? (
+                              <>
+                                <span className="bf-change-request-badge">Changes requested · action required</span>
+                                <p className="bf-change-request-note">{comment.body.split('\n').slice(1).join('\n').trim()}</p>
+                              </>
+                            ) : <p className="bf-creator-feedback-note">{comment.body}</p>}
                             <time
                               className="bf-creator-feedback-time"
                               dateTime={comment.createdAt}
@@ -2656,6 +2685,17 @@ export function App() {
               </div>
             </form>
           </section>
+        </div>
+      )}
+      {demoLoginBusyRole && (
+        <div className="bf-session-switch-overlay" role="status" aria-live="polite">
+          <div className="bf-session-switch-card">
+            <span className="bf-session-switch-mark" aria-hidden="true">✦</span>
+            <span className="bf-session-switch-eyebrow">BRANDFLIGHT DEMO</span>
+            <h2>Switching session</h2>
+            <p>Opening the {demoLoginBusyRole === 'CREATOR' ? 'Creator' : demoLoginBusyRole === 'REVIEWER' ? 'Reviewer' : 'Manager'} workspace</p>
+            <div className="bf-session-switch-track" aria-hidden="true"><i /></div>
+          </div>
         </div>
       )}
       <Outlet />

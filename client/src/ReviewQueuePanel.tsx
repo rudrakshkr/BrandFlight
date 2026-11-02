@@ -5,7 +5,7 @@ import CampaignChangeIntelligence from './CampaignChangeIntelligence'
 import ReleasePassportCard from './ReleasePassportCard'
 import { getReadableImageFindingCopy } from './lib/imageAuditCopy'
 
-const MIN_REVIEWER_OVERRIDE_LENGTH = 20
+const MIN_REVIEWER_OVERRIDE_LENGTH = 10
 
 type Decision = 'APPROVED' | 'CHANGES_REQUESTED'
 
@@ -251,8 +251,8 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
       return
     }
 
-    if (status === 'CHANGES_REQUESTED' && !commentText.trim()) {
-      setError('Add a comment explaining the requested changes.')
+    if (status === 'CHANGES_REQUESTED' && commentText.trim().length < 10) {
+      setError('Add a clear change request of at least 10 characters.')
       return
     }
 
@@ -276,8 +276,8 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
       return
     }
 
-    if (status === 'CHANGES_REQUESTED' && !commentText.trim()) {
-      setError('Add a comment explaining the requested changes.')
+    if (status === 'CHANGES_REQUESTED' && commentText.trim().length < 10) {
+      setError('Add a clear change request of at least 10 characters.')
       return
     }
 
@@ -489,7 +489,15 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
               </div>
             </div>
           )}
-          {!selected ? (
+          {loading && !selected ? (
+            <div className="bf-review-queue-loading" role="status" aria-live="polite">
+              <span className="bf-loading-spinner" aria-hidden="true" />
+              <div>
+                <strong>Loading review queue</strong>
+                <p>Refreshing submissions and the latest review decisions.</p>
+              </div>
+            </div>
+          ) : !selected ? (
             <div className="bf-review-empty bf-review-detail-empty">
               <h2>Select a submission</h2>
               <p>Choose an item from the queue to inspect its copy and saved findings.</p>
@@ -534,7 +542,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                       {approvalBlocked
                         ? 'Required image alt text is missing. Add a meaningful description and run Image Audit again. This deterministic requirement cannot be overridden. Other AI findings may still be accepted by a reviewer or manager with a reason.'
                         : requiresReviewerOverride
-                          ? 'These findings are risk signals, not automatic vetoes. A reviewer or manager may accept AI-detected issues with a reason of at least 20 characters. BrandFlight records that reason against the exact findings in the activity log and signed Release Passport.'
+                          ? 'These findings are risk signals, not automatic vetoes. A reviewer or manager may accept AI-detected issues with a reason of at least 10 characters. BrandFlight records that reason against the exact findings in the activity log and signed Release Passport.'
                           : 'No outstanding findings. The server still revalidates the audit receipts, campaign inputs and required audit status before approval.'}
                     </p>
                   </article>
@@ -742,13 +750,27 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                 {selected.comments.length === 0 ? (
                   <p className="bf-review-small">No comments yet. Comments and decision notes will be kept together here.</p>
                 ) : selected.comments.map((comment) => (
-                  <article className={`bf-review-comment${comment.body.startsWith('OVERRIDE REQUEST') ? ' bf-review-comment-override' : ''}`} key={comment.id}>
+                  <article className={`bf-review-comment${comment.body.startsWith('OVERRIDE REQUEST') ? ' bf-review-comment-override' : ''}${comment.body.startsWith('CHANGE REQUEST') ? ' bf-review-comment-request' : ''}${comment.body.startsWith('CREATOR UPDATE') ? ' bf-review-comment-update' : ''}`} key={comment.id}>
                     <div className="bf-review-comment-meta">
                       <strong>{comment.author?.name ?? 'User'}</strong>
                       <span>{comment.author?.role ?? ''}</span>
                       <time>{new Date(comment.createdAt).toLocaleString()}</time>
                     </div>
-                    {comment.body.startsWith('OVERRIDE REQUEST') ? (
+                    {comment.body.startsWith('CREATOR UPDATE') ? (
+                      <>
+                        <span className="bf-creator-update-badge">Creator revision summary</span>
+                        <div className="bf-creator-update-content">
+                          <p>{comment.body.split('\n').slice(1).join('\n').trim()}</p>
+                        </div>
+                      </>
+                    ) : comment.body.startsWith('CHANGE REQUEST') ? (
+                      <>
+                        <span className="bf-change-request-badge">Changes requested · creator action required</span>
+                        <div className="bf-change-request-content">
+                          <p>{comment.body.split('\n').slice(1).join('\n').trim()}</p>
+                        </div>
+                      </>
+                    ) : comment.body.startsWith('OVERRIDE REQUEST') ? (
                       <>
                         <span className="bf-override-message-badge">Creator override request</span>
                         <div className="bf-override-message-content">
@@ -792,6 +814,12 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                           : 'Post a comment, or explain the changes needed before requesting changes…'}
                       disabled={commentBusy || decisionBusy}
                     />
+                    <div className="bf-review-comment-meter">
+                      <span>10 characters minimum for override reasons and change requests</span>
+                      <output className={commentText.trim().length >= 10 ? 'is-valid' : 'is-invalid'}>
+                        {commentText.length.toLocaleString()} / 2,000
+                      </output>
+                    </div>
                     <p className="bf-review-note-hint">
                       {approvalBlocked
                         ? 'Approval is unavailable until the creator adds meaningful alt text and runs Image Audit again. Use this comment to explain the required fix.'
@@ -803,7 +831,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                       <button className="bf-btn-secondary" type="submit" disabled={commentBusy || decisionBusy || !commentText.trim()}>
                         {commentBusy ? 'Posting…' : 'Post Comment'}
                       </button>
-                      <button type="button" className="bf-review-request" disabled={decisionBusy || !commentText.trim()} onClick={() => openDecisionConfirmation('CHANGES_REQUESTED')}>
+                      <button type="button" className="bf-review-request" disabled={decisionBusy || commentText.trim().length < 10} onClick={() => openDecisionConfirmation('CHANGES_REQUESTED')}>
                         {decisionBusy ? 'Saving…' : 'Request Changes'}
                       </button>
                       <button

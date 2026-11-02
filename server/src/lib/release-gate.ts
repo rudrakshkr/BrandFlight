@@ -11,7 +11,7 @@ export interface ReleaseGateReport {
   warnings: Extract<ReleaseGateFindingSummary, { severity: "WARNING" }>[];
 }
 
-export const MIN_REVIEWER_OVERRIDE_LENGTH = 20;
+export const MIN_REVIEWER_OVERRIDE_LENGTH = 10;
 
 /**
  * AI findings are risk signals, not automatic vetoes: visual classifiers can

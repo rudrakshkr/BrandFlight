@@ -135,12 +135,54 @@ async function uploadImageToCloudinary(buffer: Buffer) {
   });
 }
 
+async function downloadExistingCampaignImage(secureUrl: string): Promise<Buffer> {
+  const url = new URL(secureUrl);
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "res.cloudinary.com" ||
+    !url.pathname.includes("/image/upload/")
+  ) {
+    throw new Error("The saved campaign image is not a trusted Cloudinary image URL.");
+  }
+
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(10_000),
+    redirect: "error",
+  });
+  if (!response.ok || !response.body) {
+    throw new Error("Unable to retrieve the saved campaign image from Cloudinary.");
+  }
+
+  const declaredLength = Number(response.headers.get("content-length") ?? 0);
+  if (declaredLength > MAX_IMAGE_BYTES) {
+    throw new Error("The saved campaign image exceeds the 5 MB audit limit.");
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > MAX_IMAGE_BYTES) {
+      await reader.cancel();
+      throw new Error("The saved campaign image exceeds the 5 MB audit limit.");
+    }
+    chunks.push(Buffer.from(value));
+  }
+
+  if (total === 0) throw new Error("The saved campaign image is empty.");
+  return Buffer.concat(chunks, total);
+}
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: MAX_IMAGE_BYTES,
     files: 1,
-    fields: 2,
+    fields: 3,
   },
 });
 
@@ -227,22 +269,69 @@ async function extractDominantColors(buffer: Buffer): Promise<string[]> {
 }
 
 async function processImageAudit(req: Request, res: Response) {
-  const brandProfileId = req.body?.brandProfileId;
+  const requestedBrandProfileId = req.body?.brandProfileId;
+  const submissionId = typeof req.body?.submissionId === "string"
+    ? req.body.submissionId.trim()
+    : "";
   const altText = typeof req.body?.altText === "string"
     ? req.body.altText.trim()
     : "";
 
-  if (typeof brandProfileId !== "string" || !brandProfileId.trim()) {
+  if (typeof requestedBrandProfileId !== "string" || !requestedBrandProfileId.trim()) {
     return res.status(400).json({
       error: "brandProfileId is required.",
     });
   }
 
-  if (!req.file) {
-    return res.status(400).json({
-      error: "Upload a PNG or JPEG image using the image field.",
+  let imageBuffer: Buffer;
+  let imageName: string;
+  let existingAsset: { secureUrl: string; publicId: string } | null = null;
+
+  if (req.file) {
+    imageBuffer = req.file.buffer;
+    imageName = req.file.originalname;
+  } else {
+    if (!submissionId) {
+      return res.status(400).json({
+        error: "Upload an image or provide a saved draft ID to re-audit its existing image.",
+      });
+    }
+
+    const submission = await prisma.submission.findUnique({
+      where: { id: submissionId },
+      select: {
+        creatorId: true,
+        status: true,
+        brandProfileId: true,
+        imageName: true,
+        imageUrl: true,
+        imagePublicId: true,
+      },
     });
+
+    if (!submission) return res.status(404).json({ error: "Saved draft not found." });
+    if (submission.creatorId !== req.authUser!.id) {
+      return res.status(403).json({ error: "You do not own this saved draft." });
+    }
+    if (submission.status !== "DRAFT" && submission.status !== "CHANGES_REQUESTED") {
+      return res.status(409).json({ error: "Only drafts or submissions returned for changes can be re-audited." });
+    }
+    if (submission.brandProfileId !== requestedBrandProfileId) {
+      return res.status(400).json({ error: "The requested brand profile does not match this draft." });
+    }
+    if (!submission.imageUrl || !submission.imagePublicId) {
+      return res.status(409).json({ error: "This draft does not have a saved campaign image. Upload an image first." });
+    }
+
+    imageBuffer = await downloadExistingCampaignImage(submission.imageUrl);
+    imageName = submission.imageName?.trim() || "saved-campaign-image";
+    existingAsset = {
+      secureUrl: submission.imageUrl,
+      publicId: submission.imagePublicId,
+    };
   }
+
+  const brandProfileId = requestedBrandProfileId;
   if (altText.length > 1000) {
     return res.status(400).json({ error: "Image alt text must be 1,000 characters or fewer." });
   }
@@ -260,7 +349,7 @@ async function processImageAudit(req: Request, res: Response) {
     return res.status(404).json({ error: "Brand profile not found." });
   }
 
-  const metadata = await sharp(req.file.buffer, {
+  const metadata = await sharp(imageBuffer, {
     limitInputPixels: 40_000_000,
   }).metadata();
 
@@ -270,7 +359,7 @@ async function processImageAudit(req: Request, res: Response) {
     });
   }
 
-  const dominantColors = await extractDominantColors(req.file.buffer);
+  const dominantColors = await extractDominantColors(imageBuffer);
   const approvedColors = brand.brandColors
     .filter((color) => hexToRgb(color) !== null)
     .map((color) => color.toUpperCase());
@@ -355,7 +444,7 @@ async function processImageAudit(req: Request, res: Response) {
       severity: "ERROR",
       title: "Image alt text is missing",
       message: "No alternative text was supplied for this campaign image.",
-      evidence: req.file.originalname,
+      evidence: imageName,
       suggestion: "Add concise alternative text describing the meaningful information in the image.",
       ruleCode: accessibilityRuleCode,
       confidence: "Deterministic Match",
@@ -399,10 +488,10 @@ async function processImageAudit(req: Request, res: Response) {
   let textContrastAnalysis: ImageTextContrastReport;
   try {
     const visionResult = await analyzeImageTextContrast(
-      req.file.buffer,
+      imageBuffer,
       metadata.format === "jpeg" ? "image/jpeg" : `image/${metadata.format}`,
     );
-    const pixelImage = await sharp(req.file.buffer, {
+    const pixelImage = await sharp(imageBuffer, {
       limitInputPixels: 40_000_000,
     })
       .rotate()
@@ -493,7 +582,7 @@ async function processImageAudit(req: Request, res: Response) {
       const reference = await downloadApprovedLogoReference(configuredLogo);
       const campaignMimeType = metadata.format === "jpeg" ? "image/jpeg" : metadata.format === "png" ? "image/png" : "image/webp";
       const comparison = await compareBrandLogo(
-        req.file.buffer,
+        imageBuffer,
         campaignMimeType,
         reference.buffer,
         reference.mimeType,
@@ -544,7 +633,7 @@ async function processImageAudit(req: Request, res: Response) {
     }
   }
 
-  const asset = await uploadImageToCloudinary(req.file.buffer);
+  const asset = existingAsset ?? await uploadImageToCloudinary(imageBuffer);
 
   const auditResult = {
     asset: {
@@ -552,7 +641,7 @@ async function processImageAudit(req: Request, res: Response) {
       publicId: asset.publicId,
     },
     image: {
-      name: req.file.originalname,
+      name: imageName,
       format: metadata.format,
       width: metadata.width ?? null,
       height: metadata.height ?? null,
