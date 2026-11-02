@@ -67,12 +67,23 @@ test("variable backgrounds fail closed and never produce a contrast measurement"
   assert.equal(result.backgroundType, "VARIABLE");
 });
 
-test("transparent backing pixels require manual review", () => {
+test("transparent pixels in the external background halo require manual review", () => {
   const image = makeImage();
-  image.data[(8 * image.width + 20) * image.channels + 3] = 0;
+  // The external halo for these bounds begins at x=12, y=0.
+  image.data[(0 * image.width + 12) * image.channels + 3] = 0;
   const result = sampleImageTextRegionPixels(image, bounds, "HIGH");
   assert.equal(result.status, "MANUAL_REVIEW");
   assert.equal(result.backgroundType, "TRANSPARENT");
+});
+
+test("glyph pixels on the text-box perimeter do not contaminate the external halo", () => {
+  const image = makeImage();
+  const tightBounds = { left: 250, top: 337.5, right: 650, bottom: 612.5 };
+  const result = sampleImageTextRegionPixels(image, tightBounds, "HIGH");
+
+  assert.equal(result.status, "MEASURED", result.note);
+  assert.equal(result.foregroundHex, "#8A8A8A");
+  assert.equal(result.backgroundHex, "#FFFFFF");
 });
 
 test("missing bounds or uncertain text location require manual review", () => {

@@ -30,6 +30,11 @@ export type ReleasePassportSnapshot = {
     reviewerId: string;
     reviewerName: string;
     approvedAt: string;
+    override?: {
+      reason: string;
+      highRiskFindings: Array<{ severity: "ERROR"; category: string; ruleCode: string; title: string }>;
+      warnings: Array<{ severity: "WARNING"; category: string; ruleCode: string; title: string }>;
+    };
   };
 };
 

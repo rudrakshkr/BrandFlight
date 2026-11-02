@@ -49,6 +49,7 @@ export interface ImageTextContrastRegion extends DetectedImageTextRegion {
   targetRatio: number;
   evaluation: "PIXEL_PASS" | "PIXEL_FAIL" | "MANUAL_REVIEW";
   recommendedForeground: string | null;
+  referencePair: { foregroundHex: string; backgroundHex: string } | null;
   measurement: "PIXEL_SAMPLE" | "MANUAL_REVIEW";
   measurementNote: string;
 }
@@ -79,8 +80,13 @@ export function buildImageTextContrastReport(
   }
 
   const regions = vision.regions.slice(0, 20).map((region, index): ImageTextContrastRegion => {
-    // AI determines text role and approximate size. Treat unknown size as normal text,
-    // which applies the stricter 4.5:1 threshold.
+    // Saved pairs are approved brand references, not exact image-colour rules.
+    // For text, WCAG's threshold depends on rendered text size, not its semantic
+    // label: normal/unknown text is 4.5:1; large text is 3:1. UI_ELEMENT's 3:1
+    // target applies to non-text controls/graphics, not OCR-detected text labels.
+    const referencePair = region.role === "UNKNOWN"
+      ? null
+      : accessibilityPairs?.find((pair) => pair.role === region.role) ?? null;
     const targetRatio = region.textSize === "LARGE" ? 3 : 4.5;
     const measurement = pixelMeasurements[index] ?? {
       status: "MANUAL_REVIEW" as const,
@@ -117,6 +123,9 @@ export function buildImageTextContrastReport(
       targetRatio,
       evaluation,
       recommendedForeground,
+      referencePair: referencePair
+        ? { foregroundHex: referencePair.foreground, backgroundHex: referencePair.background }
+        : null,
       measurement: measurement.status === "MEASURED" ? "PIXEL_SAMPLE" : "MANUAL_REVIEW",
       measurementNote: evaluation === "MANUAL_REVIEW" && measurement.status === "MEASURED" && contrast !== null
         ? `${measurement.note} The measured ratio is within ${PIXEL_PASS_SAFETY_MARGIN.toFixed(2)} of the target, so the system requires manual confirmation rather than granting a pass.`

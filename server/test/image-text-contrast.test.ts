@@ -173,9 +173,55 @@ test("large text uses the large-text threshold only when explicitly classified l
   const measurement = sampleImageTextRegionPixels(makeImage([119, 119, 119]), bounds, "HIGH");
   const large = buildImageTextContrastReport(vision({
     regions: [{ ...vision().regions[0]!, textSize: "LARGE" }],
-  }), standards, [measurement]);
+  }), null, [measurement]);
   assert.equal(large.regions[0]?.targetRatio, 3);
   assert.equal(large.regions[0]?.evaluation, "PIXEL_PASS");
+});
+
+test("manager-saved role pair is shown as a reference without weakening normal-text contrast", () => {
+  const measurement = sampleImageTextRegionPixels(makeImage([119, 119, 119]), bounds, "HIGH");
+  const heading = buildImageTextContrastReport(vision({
+    regions: [{ ...vision().regions[0]!, role: "HEADING", textSize: "NORMAL" }],
+  }), standards, [measurement]);
+  const region = heading.regions[0]!;
+  assert.equal(region.targetRatio, 4.5);
+  assert.equal(region.evaluation, "PIXEL_FAIL");
+  assert.deepEqual(region.referencePair, {
+    foregroundHex: "#115E59",
+    backgroundHex: "#EAF5F1",
+  });
+  // The measured pixels remain the actual uploaded image colours, not the manager's saved pair.
+  assert.equal(region.foregroundHex, "#777777");
+  assert.equal(region.backgroundHex, "#FFFFFF");
+});
+
+test("a large heading keeps the 3:1 threshold and exposes the saved role reference", () => {
+  const measurement = sampleImageTextRegionPixels(makeImage([119, 119, 119]), bounds, "HIGH");
+  const report = buildImageTextContrastReport(vision({
+    regions: [{ ...vision().regions[0]!, role: "HEADING", textSize: "LARGE" }],
+  }), standards, [measurement]);
+  assert.equal(report.regions[0]?.targetRatio, 3);
+  assert.deepEqual(report.regions[0]?.referencePair, {
+    foregroundHex: "#115E59",
+    backgroundHex: "#EAF5F1",
+  });
+});
+
+test("a normal-sized UI label still uses the normal-text threshold", () => {
+  const measurement = sampleImageTextRegionPixels(makeImage([119, 119, 119]), bounds, "HIGH");
+  const report = buildImageTextContrastReport(vision({
+    regions: [{ ...vision().regions[0]!, role: "UI_ELEMENT", textSize: "NORMAL" }],
+  }), standards, [measurement]);
+  assert.equal(report.regions[0]?.targetRatio, 4.5);
+});
+
+test("unclassified text does not receive a manager role pair and keeps the size-based fallback", () => {
+  const measurement = sampleImageTextRegionPixels(makeImage([119, 119, 119]), bounds, "HIGH");
+  const unknown = buildImageTextContrastReport(vision({
+    regions: [{ ...vision().regions[0]!, role: "UNKNOWN", textSize: "LARGE" }],
+  }), standards, [measurement]);
+  assert.equal(unknown.regions[0]?.targetRatio, 3);
+  assert.equal(unknown.regions[0]?.referencePair, null);
 });
 
 test("no located text is represented distinctly from a completed measurement", () => {

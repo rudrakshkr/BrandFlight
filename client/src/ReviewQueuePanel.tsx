@@ -3,6 +3,9 @@ import type { ImageAuditData } from './types/imageAudit'
 import ImageTextContrastReport from './ImageTextContrastReport'
 import CampaignChangeIntelligence from './CampaignChangeIntelligence'
 import ReleasePassportCard from './ReleasePassportCard'
+import { getReadableImageFindingCopy } from './lib/imageAuditCopy'
+
+const MIN_REVIEWER_OVERRIDE_LENGTH = 20
 
 type Decision = 'APPROVED' | 'CHANGES_REQUESTED'
 
@@ -78,6 +81,35 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
   const [commentText, setCommentText] = useState('')
   const [queueView, setQueueView] = useState<'IN_REVIEW' | 'HISTORY'>('IN_REVIEW')
   const [pendingDecision, setPendingDecision] = useState<Decision | null>(null)
+
+  const gateFindingCandidates = selected
+    ? [
+        ...selected.findings,
+        ...(selected.imageAuditData?.findings ?? []),
+      ]
+    : []
+  const releaseGateFindings = gateFindingCandidates.filter((finding, index, all) => {
+    if (finding.severity !== 'ERROR' && finding.severity !== 'WARNING') return false
+    const key = [finding.category, finding.severity, finding.ruleCode ?? '', finding.title.trim().toLowerCase()].join('|')
+    return all.findIndex((candidate) =>
+      candidate.severity === 'ERROR' || candidate.severity === 'WARNING'
+        ? [candidate.category, candidate.severity, candidate.ruleCode ?? '', candidate.title.trim().toLowerCase()].join('|') === key
+        : false,
+    ) === index
+  })
+  const isMissingAltTextHardStop = (finding: { severity: string; category: string; title: string }) =>
+    finding.severity === 'ERROR' &&
+    finding.category === 'ACCESSIBILITY' &&
+    finding.title.trim().toLowerCase() === 'image alt text is missing'
+  const hardStopFindings = releaseGateFindings.filter(isMissingAltTextHardStop)
+  const highRiskFindings = releaseGateFindings.filter(
+    (finding) => finding.severity === 'ERROR' && !isMissingAltTextHardStop(finding),
+  )
+  const warningFindings = releaseGateFindings.filter(
+    (finding) => finding.severity === 'WARNING',
+  )
+  const approvalBlocked = hardStopFindings.length > 0
+  const requiresReviewerOverride = highRiskFindings.length > 0 || warningFindings.length > 0
 
   const loadQueue = useCallback(async () => {
     setLoading(true)
@@ -208,10 +240,22 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
 
   const openDecisionConfirmation = (status: Decision) => {
     if (!selected || decisionBusy) return
+
+    if (status === 'APPROVED' && approvalBlocked) {
+      setError('Approval is blocked because required image alt text is missing. Add meaningful alt text and run Image Audit again.')
+      return
+    }
+
+    if (status === 'APPROVED' && requiresReviewerOverride && commentText.trim().length < MIN_REVIEWER_OVERRIDE_LENGTH) {
+      setError(`Add a reviewer override reason of at least ${MIN_REVIEWER_OVERRIDE_LENGTH} characters. It will be linked to the findings being accepted.`)
+      return
+    }
+
     if (status === 'CHANGES_REQUESTED' && !commentText.trim()) {
       setError('Add a comment explaining the requested changes.')
       return
     }
+
     setError(null)
     setNotice(null)
     setPendingDecision(status)
@@ -219,6 +263,18 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
 
   const decide = async (status: Decision) => {
     if (!selected || decisionBusy) return
+
+    if (status === 'APPROVED' && approvalBlocked) {
+      setError('Approval is blocked because required image alt text is missing. Add meaningful alt text and run Image Audit again.')
+      setPendingDecision(null)
+      return
+    }
+
+    if (status === 'APPROVED' && requiresReviewerOverride && commentText.trim().length < MIN_REVIEWER_OVERRIDE_LENGTH) {
+      setError(`Add a reviewer override reason of at least ${MIN_REVIEWER_OVERRIDE_LENGTH} characters. It will be linked to the findings being accepted.`)
+      setPendingDecision(null)
+      return
+    }
 
     if (status === 'CHANGES_REQUESTED' && !commentText.trim()) {
       setError('Add a comment explaining the requested changes.')
@@ -329,7 +385,9 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
             </h2>
             <p id="bf-decision-confirmation-description">
               {pendingDecision === 'APPROVED'
-                ? `This will mark “${selected.title}” as approved and complete the review.`
+                ? requiresReviewerOverride
+                  ? `This will approve “${selected.title}” and record your reason against ${highRiskFindings.length} high-risk finding(s) and ${warningFindings.length} warning(s).`
+                  : `This will mark “${selected.title}” as approved and complete the review.`
                 : `This will return “${selected.title}” to the creator so they can revise and resubmit it.`}
             </p>
             {pendingDecision === 'CHANGES_REQUESTED' && (
@@ -340,8 +398,15 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
             )}
             {pendingDecision === 'APPROVED' && commentText.trim() && (
               <div className="bf-decision-confirmation-note">
-                <strong>Comment already in the thread</strong>
-                <p>Your comment will remain visible in the campaign discussion.</p>
+                <strong>{requiresReviewerOverride ? 'Reviewer override reason' : 'Approval note'}</strong>
+                <p>{commentText.trim()}</p>
+                {requiresReviewerOverride && (
+                  <ul>
+                    {releaseGateFindings.map((finding, index) => (
+                      <li key={`confirm-gate-${finding.ruleCode ?? 'rule'}-${index}`}>{finding.title}</li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )}
             <div className="bf-decision-confirmation-actions">
@@ -441,6 +506,53 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                 </p>
               </header>
 
+              {selected.status === 'IN_REVIEW' && (
+                <section className="bf-review-section" aria-label="Release compliance gate">
+                  <h3>Release compliance gate</h3>
+                  <article className="bf-review-finding">
+                    <div className="bf-review-finding-top">
+                      <strong className={`bf-review-severity ${
+                        approvalBlocked || highRiskFindings.length > 0
+                          ? 'error'
+                          : warningFindings.length > 0
+                            ? 'warning'
+                            : 'info'
+                      }`}>
+                        {approvalBlocked
+                          ? 'Blocked · required alt text missing'
+                          : highRiskFindings.length > 0
+                            ? 'High-risk review required'
+                            : warningFindings.length > 0
+                            ? 'Reviewer sign-off required'
+                            : 'Ready for approval'}
+                      </strong>
+                      <span>
+                        {hardStopFindings.length} hard stop(s) · {highRiskFindings.length} high-risk · {warningFindings.length} warning(s)
+                      </span>
+                    </div>
+                    <p>
+                      {approvalBlocked
+                        ? 'Required image alt text is missing. Add a meaningful description and run Image Audit again. This deterministic requirement cannot be overridden. Other AI findings may still be accepted by a reviewer or manager with a reason.'
+                        : requiresReviewerOverride
+                          ? 'These findings are risk signals, not automatic vetoes. A reviewer or manager may accept AI-detected issues with a reason of at least 20 characters. BrandFlight records that reason against the exact findings in the activity log and signed Release Passport.'
+                          : 'No outstanding findings. The server still revalidates the audit receipts, campaign inputs and required audit status before approval.'}
+                    </p>
+                  </article>
+                  {(requiresReviewerOverride || approvalBlocked) && (
+                    <ul className="bf-release-gate-finding-list">
+                      {releaseGateFindings.map((finding, index) => (
+                        <li key={`gate-${finding.ruleCode ?? 'rule'}-${finding.title}-${index}`}>
+                          <span>{isMissingAltTextHardStop(finding) ? 'Hard stop' : finding.severity === 'ERROR' ? 'High risk' : 'Warning'}</span>
+                          <strong>{finding.title}</strong>
+                          {finding.ruleCode && <code>{finding.ruleCode}</code>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="bf-review-note-hint">Hard stops apply to missing required alt text, missing or stale audit receipts, incomplete image assets, and unavailable required semantic checks. A reviewer note cannot bypass them.</p>
+                </section>
+              )}
+
               <section className="bf-review-section">
                 <h3>Submitted copy</h3>
                 <pre className="bf-review-copy">{selected.contentText}</pre>
@@ -505,7 +617,7 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                           {selected.imageAuditData.logoVerification.suggestions.length > 0 && <ul className="bf-logo-verification-list suggestions">{selected.imageAuditData.logoVerification.suggestions.map((item, index) => <li key={`review-logo-suggestion-${index}`}>{item}</li>)}</ul>}
                         </section>
                       )}
-                      <ImageTextContrastReport analysis={selected.imageAuditData.image.textContrastAnalysis} />
+                      <ImageTextContrastReport analysis={selected.imageAuditData?.image.textContrastAnalysis} />
                       <p>
                         <b>Image audit findings:</b>{' '}
                         {selected.imageAuditData.totalFindings}
@@ -575,9 +687,20 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                             <code>{finding.ruleCode}</code>
                           </div>
                           <h4>{finding.title}</h4>
-                          <p>{finding.message}</p>
-                          <p><b>Evidence:</b> {finding.evidence}</p>
-                          <p><b>Suggestion:</b> {finding.suggestion}</p>
+                          <p>{finding.ruleCode === 'ACCESSIBILITY-02'
+                            ? getReadableImageFindingCopy(finding, selected.imageAuditData?.image.textContrastAnalysis).summary
+                            : finding.message}</p>
+                          {finding.ruleCode === 'ACCESSIBILITY-02' ? (
+                            <>
+                              <p><b>What we found:</b> {getReadableImageFindingCopy(finding, selected.imageAuditData?.image.textContrastAnalysis).whatFound}</p>
+                              <p><b>What to do:</b> {getReadableImageFindingCopy(finding, selected.imageAuditData?.image.textContrastAnalysis).whatToDo}</p>
+                            </>
+                          ) : (
+                            <>
+                              {finding.evidence && <p><b>What we found:</b> {finding.evidence}</p>}
+                              {finding.suggestion && <p><b>What to do:</b> {finding.suggestion}</p>}
+                            </>
+                          )}
                         </article>
                       ))}
                     </>
@@ -635,6 +758,11 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                           })}
                         </div>
                       </>
+                    ) : comment.body.startsWith('REVIEWER OVERRIDE') ? (
+                      <>
+                        <span className="bf-override-message-badge">Reviewer override · signed into Release Passport</span>
+                        <p className="bf-review-override-text">{comment.body.replace(/^REVIEWER OVERRIDE:?\s*/, '')}</p>
+                      </>
                     ) : <p>{comment.body}</p>}
                   </article>
                 ))}
@@ -644,17 +772,33 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                     event.preventDefault()
                     void addComment()
                   }}>
-                    <label htmlFor="bf-review-comment">Comment or decision note</label>
+                    <label htmlFor="bf-review-comment">
+                      {approvalBlocked
+                        ? 'Comment or requested fix'
+                        : requiresReviewerOverride
+                          ? 'Reviewer override reason (required to approve)'
+                          : 'Comment or decision note'}
+                    </label>
                     <textarea
                       id="bf-review-comment"
                       rows={3}
                       maxLength={2000}
                       value={commentText}
                       onChange={(event) => setCommentText(event.target.value)}
-                      placeholder="Post a comment, or explain the changes needed before requesting changes…"
+                      placeholder={approvalBlocked
+                        ? 'Explain that meaningful alt text must be added and the image audit rerun…'
+                        : requiresReviewerOverride
+                          ? 'Explain why each listed finding is acceptable or why it does not apply…'
+                          : 'Post a comment, or explain the changes needed before requesting changes…'}
                       disabled={commentBusy || decisionBusy}
                     />
-                    <p className="bf-review-note-hint">Post Comment saves a discussion note. Request Changes saves this text as the required feedback. An optional note entered before approval is also kept in the thread.</p>
+                    <p className="bf-review-note-hint">
+                      {approvalBlocked
+                        ? 'Approval is unavailable until the creator adds meaningful alt text and runs Image Audit again. Use this comment to explain the required fix.'
+                        : requiresReviewerOverride
+                          ? `Approval requires at least ${MIN_REVIEWER_OVERRIDE_LENGTH} characters. The reason will be attached to each high-risk finding and warning listed above, stored in activity, and included in the signed Release Passport.`
+                          : 'Post Comment saves a discussion note. Any optional approval note is also kept in campaign activity.'}
+                    </p>
                     <div className="bf-review-decision-buttons">
                       <button className="bf-btn-secondary" type="submit" disabled={commentBusy || decisionBusy || !commentText.trim()}>
                         {commentBusy ? 'Posting…' : 'Post Comment'}
@@ -662,7 +806,16 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                       <button type="button" className="bf-review-request" disabled={decisionBusy || !commentText.trim()} onClick={() => openDecisionConfirmation('CHANGES_REQUESTED')}>
                         {decisionBusy ? 'Saving…' : 'Request Changes'}
                       </button>
-                      <button type="button" className="bf-btn-primary" disabled={decisionBusy} onClick={() => openDecisionConfirmation('APPROVED')}>
+                      <button
+                        type="button"
+                        className="bf-btn-primary"
+                        disabled={
+                          decisionBusy ||
+                          approvalBlocked ||
+                          (requiresReviewerOverride && commentText.trim().length < MIN_REVIEWER_OVERRIDE_LENGTH)
+                        }
+                        onClick={() => openDecisionConfirmation('APPROVED')}
+                      >
                         {decisionBusy ? 'Saving…' : 'Approve'}
                       </button>
                     </div>

@@ -5911,3 +5911,46 @@ input[type="reset"] {
   .bf-image-text-contrast-region-top { flex-direction: column; }
   .bf-image-text-colour-pair > strong { margin-left: 0; }
 }
+
+/* Round 3: image/alt-text revision history, accessible role references, and signed overrides. */
+.bf-change-unchanged { background: #eef5ef; color: #536b5a; }
+.bf-change-media { display: grid; gap: 10px; padding: 12px; border: 1px solid #e2e9e3; border-radius: 9px; background: #f9fbf9; }
+.bf-change-media-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.bf-change-media-heading h4 { color: #263c30; font-size: 12px; font-weight: 800; }
+.bf-change-media-heading > span { color: #64766a; font-size: 10px; font-weight: 700; }
+.bf-change-media-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.bf-change-media-card { display: grid; align-content: start; gap: 6px; min-width: 0; padding: 10px; border: 1px solid #e1e8e2; border-radius: 8px; background: #fff; }
+.bf-change-media-card.current { border-color: #a9d8c4; }
+.bf-change-media-card > strong { color: #34483b; font-size: 11px; }
+.bf-change-media-card img { display: block; width: 100%; max-height: 180px; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 6px; background: #f0f2f0; }
+.bf-change-no-image { display: grid; min-height: 90px; place-items: center; border: 1px dashed #d6dfd8; border-radius: 6px; background: #f7f9f7; color: #839087; font-size: 11px; }
+.bf-change-media-card > small { margin-top: 3px; color: #708076; font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .04em; }
+.bf-change-media-card > p { color: #44564a; font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.bf-change-alt-diff { display: grid; gap: 5px; padding: 10px; border-radius: 7px; background: #fff; }
+.bf-change-alt-diff > strong { color: #40594a; font-size: 11px; }
+.bf-change-alt-diff > p { color: #394c40; font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bf-change-alt-diff ins { padding: 1px 2px; border-radius: 3px; background: #d9f6df; color: #145c35; text-decoration: none; }
+.bf-change-alt-diff del { padding: 1px 2px; border-radius: 3px; background: #ffe1dc; color: #9e3026; text-decoration: line-through; }
+.bf-image-text-reference-pair { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 12px; margin-top: 9px; padding: 8px 10px; border: 1px solid #dce9df; border-radius: 7px; background: #f6faf7; color: #4a6152; font-size: 10px; }
+.bf-image-text-reference-pair > span:first-child { width: 100%; color: #40594a; font-weight: 800; }
+.bf-image-text-reference-pair > span:not(:first-child) { display: inline-flex; align-items: center; gap: 5px; }
+.bf-image-text-reference-pair i { width: 12px; height: 12px; border: 1px solid #bbc8bf; border-radius: 3px; }
+.bf-image-text-reference-pair code { color: #30473a; font-size: 10px; }
+.bf-image-text-reference-pair > small { color: #77867c; font-size: 9px; }
+.bf-release-gate-finding-list { display: grid; gap: 5px; margin: 8px 0 0; padding: 0; list-style: none; }
+.bf-release-gate-finding-list li { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; padding: 7px 9px; border: 1px solid #e7e9e5; border-radius: 6px; background: #fff; }
+.bf-release-gate-finding-list li > span { color: #7b5740; font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.bf-release-gate-finding-list li > strong { flex: 1 1 180px; color: #394b3f; font-size: 11px; }
+.bf-release-gate-finding-list li > code { color: #748176; font-size: 9px; }
+.bf-review-override-text { white-space: pre-wrap; line-height: 1.6; }
+.bf-decision-confirmation-note ul { margin: 8px 0 0; padding-left: 18px; color: #56665a; font-size: 11px; line-height: 1.5; }
+.bf-passport-override-record { display: grid; gap: 10px; padding: 18px; border: 1px solid #e4d6b7; border-radius: 12px; background: #fffdf8; }
+.bf-passport-override-record h2 { color: #5b492d; font-size: 16px; }
+.bf-passport-override-reason { padding: 10px 12px; border-radius: 7px; background: #fff; color: #4f4a3f; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+.bf-passport-override-record strong { color: #5b513e; font-size: 12px; }
+.bf-passport-override-record ul { margin: 5px 0 0; padding-left: 20px; color: #625b4e; font-size: 12px; line-height: 1.6; }
+.bf-passport-override-record > small { color: #867b64; font-size: 10px; }
+@media (max-width: 600px) {
+  .bf-change-media-grid { grid-template-columns: 1fr; }
+  .bf-change-media-heading { align-items: flex-start; flex-direction: column; }
+}

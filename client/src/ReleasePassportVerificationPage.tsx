@@ -16,6 +16,11 @@ interface VerificationResponse {
     reviewerName: string
     approvedAt: string
     decision: 'APPROVED' | string
+    override?: {
+      reason: string
+      highRiskFindings: Array<{ severity: 'ERROR'; category: string; ruleCode: string; title: string }>
+      warnings: Array<{ severity: 'WARNING'; category: string; ruleCode: string; title: string }>
+    } | null
   } | null
   checks?: {
     passportSignature: boolean
@@ -218,6 +223,35 @@ export default function ReleasePassportVerificationPage({ apiBaseUrl }: Props) {
                 </div>
               </div>
             </section>
+
+            {result.checks?.passportSignature && result.approval?.override && (
+              <section className="bf-passport-override-record" aria-labelledby="bf-passport-override-title">
+                <div>
+                  <p className="bf-passport-eyebrow">HUMAN REVIEW RECORD</p>
+                  <h2 id="bf-passport-override-title">Reviewer override recorded</h2>
+                  <p>The reviewer approved the campaign while acknowledging the findings below. The reason and finding list are covered by the passport signature.</p>
+                </div>
+                <strong>Reason supplied by {result.approval.reviewerName}</strong>
+                <p className="bf-passport-override-reason">{result.approval.override.reason}</p>
+                {result.approval.override.highRiskFindings.length > 0 && (
+                  <div>
+                    <strong>High-risk findings acknowledged</strong>
+                    <ul>{result.approval.override.highRiskFindings.map((finding, index) => (
+                      <li key={`passport-error-${finding.ruleCode}-${index}`}>{finding.title}{finding.ruleCode ? ` · ${finding.ruleCode}` : ''}</li>
+                    ))}</ul>
+                  </div>
+                )}
+                {result.approval.override.warnings.length > 0 && (
+                  <div>
+                    <strong>Warnings acknowledged</strong>
+                    <ul>{result.approval.override.warnings.map((finding, index) => (
+                      <li key={`passport-warning-${finding.ruleCode}-${index}`}>{finding.title}{finding.ruleCode ? ` · ${finding.ruleCode}` : ''}</li>
+                    ))}</ul>
+                  </div>
+                )}
+                <small>This is a record of the reviewer's decision, not a claim that the findings were technically cleared.</small>
+              </section>
+            )}
 
             <section className="bf-passport-checks-section" aria-labelledby="bf-passport-checks-title">
               <div className="bf-passport-section-heading bf-passport-checks-heading">

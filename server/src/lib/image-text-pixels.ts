@@ -122,24 +122,26 @@ export function sampleImageTextRegionPixels(
     return manual("The detected text region is too small for reliable local pixel sampling.");
   }
 
-  // Gemini is asked for only 10–15% padding around the glyphs. A 16% ring
-  // overlaps antialiased characters (especially at the left/right ends of a
-  // single-line heading) and falsely makes a flat background appear variable.
-  // Use a narrow outer 5% ring, leaving most of the padding as a safety buffer.
+  // Sample the background from a separate halo outside the AI-located
+  // text box. Its own perimeter can contain antialiased glyph pixels when
+  // Gemini returns a tight rectangle.
   const borderX = Math.max(2, Math.floor(regionWidth * 0.05));
   const borderY = Math.max(2, Math.floor(regionHeight * 0.05));
+  const haloX = Math.max(4, Math.ceil(regionWidth * 0.05));
+  const haloY = Math.max(4, Math.ceil(regionHeight * 0.15));
+  const haloX0 = Math.max(0, x0 - haloX);
+  const haloY0 = Math.max(0, y0 - haloY);
+  const haloX1 = Math.min(image.width, x1 + haloX);
+  const haloY1 = Math.min(image.height, y1 + haloY);
+
   const sampleStep = Math.max(1, Math.floor(Math.sqrt((regionWidth * regionHeight) / 50000)));
   const backgroundPixels: Rgb[] = [];
   let transparentBackgroundPixels = 0;
 
-  for (let y = y0; y < y1; y += sampleStep) {
-    for (let x = x0; x < x1; x += sampleStep) {
-      const localX = x - x0;
-      const localY = y - y0;
-      const inPerimeter =
-        localX < borderX || localX >= regionWidth - borderX ||
-        localY < borderY || localY >= regionHeight - borderY;
-      if (!inPerimeter) continue;
+  for (let y = haloY0; y < haloY1; y += sampleStep) {
+    for (let x = haloX0; x < haloX1; x += sampleStep) {
+      const insideTextBounds = x >= x0 && x < x1 && y >= y0 && y < y1;
+      if (insideTextBounds) continue;
 
       const pixel = readPixel(image, x, y);
       if (pixel.alpha < 250) transparentBackgroundPixels += 1;
@@ -154,11 +156,24 @@ export function sampleImageTextRegionPixels(
     return manual("The local backing surface contains transparency, so its displayed colour depends on the final compositing background.", "TRANSPARENT");
   }
 
+  const samplingContext = [
+    `Image=${image.width}x${image.height}px`,
+    `Gemini bounds(0-1000)=L${left},T${top},R${right},B${bottom}`,
+    `pixel bounds=[${x0},${y0},${x1},${y1})`,
+    `region=${regionWidth}x${regionHeight}px`,
+    `internal exclusion border=${borderX}x${borderY}px`,
+    `external halo=${haloX}x${haloY}px`,
+    `halo bounds=[${haloX0},${haloY0},${haloX1},${haloY1})`,
+    `sample step=${sampleStep}px`,
+  ].join("; ");
+
   const background = medianRgb(backgroundPixels);
-  const uniformBackgroundRatio = backgroundPixels.filter((pixel) => distance(pixel, background) <= 18).length / backgroundPixels.length;
+  const backgroundNearMedianCount = backgroundPixels.filter((pixel) => distance(pixel, background) <= 18).length;
+  const backgroundOutsideToleranceCount = backgroundPixels.length - backgroundNearMedianCount;
+  const uniformBackgroundRatio = backgroundNearMedianCount / backgroundPixels.length;
   if (uniformBackgroundRatio < 0.94) {
     return manual(
-      `The outer background sample is not sufficiently uniform (${Math.round(uniformBackgroundRatio * 100)}% of sampled pixels are within 18 RGB levels of the median; at least 94% is required). The local backing may vary or the detected text box may not include enough padding. Use a solid backing surface or inspect the source design manually.`,
+      `The external background halo is not sufficiently uniform (${Math.round(uniformBackgroundRatio * 100)}% of sampled pixels are within 18 RGB levels of the median; at least 94% is required). ${samplingContext}; halo samples=${backgroundPixels.length}; within tolerance=${backgroundNearMedianCount}; outside tolerance=${backgroundOutsideToleranceCount}; median background=${toHex(background)}. The adjacent backing may vary or nearby artwork may enter the sampling halo. Use a solid backing surface or inspect the source design manually.`,
       "VARIABLE",
       toHex(background),
     );
@@ -185,11 +200,13 @@ export function sampleImageTextRegionPixels(
   if (backgroundLikePixels.length < 20) {
     return manual("The backing surface cannot be separated reliably from the detected glyph pixels.", "VARIABLE", toHex(background));
   }
-  const innerBackgroundUniformity = backgroundLikePixels
-    .filter((pixel) => distance(pixel, background) <= 18).length / backgroundLikePixels.length;
+  const innerBackgroundNearMedianCount = backgroundLikePixels
+    .filter((pixel) => distance(pixel, background) <= 18).length;
+  const innerBackgroundOutsideToleranceCount = backgroundLikePixels.length - innerBackgroundNearMedianCount;
+  const innerBackgroundUniformity = innerBackgroundNearMedianCount / backgroundLikePixels.length;
   if (innerBackgroundUniformity < 0.94) {
     return manual(
-      "Pixels inside the text region do not share the same local backing colour as the surrounding border. The background may vary behind the glyphs.",
+      `Pixels inside the text region do not share the same local backing colour as the external halo (${Math.round(innerBackgroundUniformity * 100)}% within tolerance). ${samplingContext}; inner pixels=${innerPixels.length}; background-like inner pixels=${backgroundLikePixels.length}; within tolerance=${innerBackgroundNearMedianCount}; outside tolerance=${innerBackgroundOutsideToleranceCount}; median background=${toHex(background)}. The background may vary behind the glyphs.`,
       "VARIABLE",
       toHex(background),
     );
@@ -246,7 +263,7 @@ export function sampleImageTextRegionPixels(
     foregroundHex: toHex(foreground),
     backgroundHex: toHex(background),
     backgroundType: "SOLID",
-    note: `Foreground and background were sampled from the uploaded image pixels (perimeter uniformity ${(uniformBackgroundRatio * 100).toFixed(0)}%, interior backing uniformity ${(innerBackgroundUniformity * 100).toFixed(0)}%). The text-region bounds were AI-located; review the image if the box does not tightly surround the intended text.`,
+    note: `Foreground and background were sampled from the uploaded image pixels (external halo uniformity ${(uniformBackgroundRatio * 100).toFixed(0)}%, interior backing uniformity ${(innerBackgroundUniformity * 100).toFixed(0)}%). ${samplingContext}; halo samples=${backgroundPixels.length}; halo within tolerance=${backgroundNearMedianCount}; median background=${toHex(background)}. The text-region bounds were AI-located; review the image if the halo includes nearby artwork or a different backing surface.`,
   };
 }
 

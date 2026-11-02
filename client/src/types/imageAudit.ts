@@ -71,6 +71,7 @@ export interface ImageTextContrastRegion {
   targetRatio: number
   evaluation: 'PIXEL_PASS' | 'PIXEL_FAIL' | 'MANUAL_REVIEW' | 'ESTIMATED_PASS' | 'ESTIMATED_FAIL'
   recommendedForeground: string | null
+  referencePair?: { foregroundHex: string; backgroundHex: string } | null
   measurement?: 'PIXEL_SAMPLE' | 'MANUAL_REVIEW'
   measurementNote?: string
 }

@@ -4,6 +4,7 @@ import './App.css'
 import BrandFlightLogo from './BrandFlightLogo'
 import ImageTextContrastReport from './ImageTextContrastReport'
 import type { ImageAuditData as ImageAuditApiResponse } from './types/imageAudit'
+import { getReadableImageFindingCopy } from './lib/imageAuditCopy'
 import RulebookPanel, { type BrandProfileData } from './RulebookPanel'
 import SavedSubmissionsPanel, { type SubmissionDetail } from './SavedSubmissionsPanel'
 import ReviewQueuePanel from './ReviewQueuePanel'
@@ -2241,15 +2242,19 @@ export function App() {
                               <span className="bf-source-meta">{finding.confidence}</span>
                             </div>
                             <h3 className="bf-finding-title">{finding.title}</h3>
-                            <p className="bf-finding-desc">{finding.message}</p>
+                            <p className="bf-finding-desc">
+                              {finding.ruleCode === 'ACCESSIBILITY-02'
+                                ? getReadableImageFindingCopy(finding, imageAuditResult.image.textContrastAnalysis).summary
+                                : finding.message}
+                            </p>
                             <div className="bf-evidence-container">
                               <div className="bf-evidence-row">
-                                <span className="bf-evidence-label">Evidence:</span>
-                                <span>{finding.evidence}</span>
+                                <span className="bf-evidence-label">What we found:</span>
+                                <span>{getReadableImageFindingCopy(finding, imageAuditResult.image.textContrastAnalysis).whatFound}</span>
                               </div>
                               <div className="bf-evidence-row">
-                                <span className="bf-evidence-label">Guidance:</span>
-                                <span>{finding.suggestion}</span>
+                                <span className="bf-evidence-label">What to do:</span>
+                                <span>{getReadableImageFindingCopy(finding, imageAuditResult.image.textContrastAnalysis).whatToDo}</span>
                               </div>
                             </div>
                           </article>

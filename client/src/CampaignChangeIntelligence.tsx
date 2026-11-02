@@ -94,6 +94,15 @@ export default function CampaignChangeIntelligence({
       : null,
     [previousContent, currentContent],
   )
+  const altTextChanged = previous
+    ? (previous.imageAltText ?? '') !== (currentImageAltText ?? '')
+    : false
+  const altTextDiff = useMemo(
+    () => previous && altTextChanged
+      ? buildWordDiff(previous.imageAltText ?? '', currentImageAltText ?? '')
+      : null,
+    [previous, currentImageAltText, altTextChanged],
+  )
 
   if (!latest || !previous) {
     return (
@@ -110,9 +119,11 @@ export default function CampaignChangeIntelligence({
     )
   }
 
-  const imageChanged = previous.imageUrl !== currentImageUrl ||
-    previous.imagePublicId !== currentImagePublicId ||
-    previous.imageAltText !== currentImageAltText
+  const imageAssetChanged = previous.imageUrl !== currentImageUrl ||
+    previous.imagePublicId !== currentImagePublicId
+  const imageChanged = imageAssetChanged || altTextChanged
+  const previousAltText = previous.imageAltText?.trim() || 'No alt text supplied.'
+  const currentAltText = currentImageAltText?.trim() || 'No alt text supplied.'
 
   return (
     <section className="bf-review-section bf-change-intelligence">
@@ -131,7 +142,9 @@ export default function CampaignChangeIntelligence({
           <div className="bf-change-metrics">
             <span className="bf-change-added">+{diff.added} words added</span>
             <span className="bf-change-removed">−{diff.removed} words removed</span>
-            {imageChanged && <span className="bf-change-image">Image or alt text changed</span>}
+            {imageAssetChanged && <span className="bf-change-image">Image changed</span>}
+            {altTextChanged && <span className="bf-change-image">Alt text changed</span>}
+            {!imageChanged && (previous.imageUrl || currentImageUrl) && <span className="bf-change-unchanged">Image and alt text unchanged</span>}
           </div>
           <div className="bf-change-diff" aria-label="Word-level revision comparison">
             {diff.parts.map((part, index) => part.type === 'added'
@@ -142,7 +155,43 @@ export default function CampaignChangeIntelligence({
           </div>
         </>
       ) : null}
-      <p className="bf-change-footnote">Compared from saved revision snapshots. Re-run preflight after edits; this diff does not itself determine compliance.</p>
+      <section className="bf-change-media" aria-label="Image and alt-text changes">
+        <div className="bf-change-media-heading">
+          <h4>Image &amp; alt-text changes</h4>
+          <span>{imageAssetChanged ? 'Image asset updated' : altTextChanged ? 'Alt text updated' : 'No media changes'}</span>
+        </div>
+        <div className="bf-change-media-grid">
+          <article className="bf-change-media-card">
+            <strong>Previous · v{previous.version}</strong>
+            {previous.imageUrl ? (
+              <img src={previous.imageUrl} alt={previousAltText === 'No alt text supplied.' ? 'Previous campaign image' : previousAltText} loading="lazy" />
+            ) : <div className="bf-change-no-image">No image attached</div>}
+            <small>Alt text</small>
+            <p>{previousAltText}</p>
+          </article>
+          <article className="bf-change-media-card current">
+            <strong>Current · v{latest.version}</strong>
+            {currentImageUrl ? (
+              <img src={currentImageUrl} alt={currentAltText === 'No alt text supplied.' ? 'Current campaign image' : currentAltText} loading="lazy" />
+            ) : <div className="bf-change-no-image">No image attached</div>}
+            <small>Alt text</small>
+            <p>{currentAltText}</p>
+          </article>
+        </div>
+        {altTextChanged && altTextDiff && (
+          <div className="bf-change-alt-diff" aria-label="Alt-text changes">
+            <strong>Alt-text diff</strong>
+            {altTextDiff.limited ? <p>Alt text is too long for an inline comparison.</p> : (
+              <p>{altTextDiff.parts.map((part, index) => part.type === 'added'
+                ? <ins key={`alt-${part.type}-${index}`}>{part.text}</ins>
+                : part.type === 'removed'
+                  ? <del key={`alt-${part.type}-${index}`}>{part.text}</del>
+                  : <span key={`alt-${part.type}-${index}`}>{part.text}</span>)}</p>
+            )}
+          </div>
+        )}
+      </section>
+      <p className="bf-change-footnote">Compared with saved revision snapshots. Image previews and alt-text changes are shown separately from the copy diff. Re-run preflight after edits; the diff itself does not determine compliance.</p>
     </section>
   )
 }

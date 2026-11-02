@@ -52,3 +52,36 @@ test("release passport digest is bound to the signing secret", () => {
   const first = createReleasePassport(snapshot, "a".repeat(40));
   assert.equal(verifyReleasePassportHash(first.snapshot, first.passportHash, "b".repeat(40)), false);
 });
+
+
+test("release passport signature covers reviewer override reasons and linked findings", () => {
+  const passport = createReleasePassport({
+    ...snapshot,
+    approval: {
+      ...snapshot.approval,
+      override: {
+        reason: "The logo is visibly present in the lower-right corner of the artwork.",
+        highRiskFindings: [{
+          severity: "ERROR",
+          category: "VISUAL",
+          ruleCode: "VISUAL-01",
+          title: "Required logo was not detected",
+        }],
+        warnings: [],
+      },
+    },
+  }, "x".repeat(40));
+  assert.equal(verifyReleasePassportHash(passport.snapshot, passport.passportHash, "x".repeat(40)), true);
+
+  const altered = {
+    ...passport.snapshot,
+    approval: {
+      ...passport.snapshot.approval,
+      override: {
+        ...passport.snapshot.approval.override!,
+        reason: "A different reason was substituted after approval.",
+      },
+    },
+  };
+  assert.equal(verifyReleasePassportHash(altered, passport.passportHash, "x".repeat(40)), false);
+});

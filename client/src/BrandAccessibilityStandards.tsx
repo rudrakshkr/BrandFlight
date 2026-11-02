@@ -20,7 +20,7 @@ export default function BrandAccessibilityStandards({ value, onChange }: Props) 
         <div>
           <span className="bf-contrast-eyebrow">SAVED BRAND RULES · ACCESSIBILITY</span>
           <h3 id="bf-accessibility-standards-title">Accessible colour roles</h3>
-          <p>Save the approved text and background colours for each design role. Image preflight measures the uploaded pixels independently; it does not assume the configured colours appear in the artwork.</p>
+          <p>These are manager-approved reference colour pairs for each design role. BrandFlight checks each saved pair against its role's WCAG target and shows it as a reference during image review. For text in uploaded images, the audit measures the actual pixel colours and selects the WCAG threshold by text size: 4.5:1 for normal or unknown-size text, and 3:1 for large text. Saved hex values are references, not exact-match rules.</p>
         </div>
         <span className="bf-contrast-count">5 standards</span>
       </div>
@@ -88,7 +88,7 @@ export default function BrandAccessibilityStandards({ value, onChange }: Props) 
           )
         })}
       </div>
-      <p className="bf-accessibility-standards-note">Save these standards with the Brand Profile. A later change invalidates image-audit receipts created under the previous standards. The upload audit estimates colours from image pixels via visual AI; ambiguous backgrounds are routed for manual review.</p>
+      <p className="bf-accessibility-standards-note">Save these reference pairs with the Brand Profile. They help teams keep a consistent accessible design treatment; they do not replace measurements of the uploaded artwork. Image text uses the WCAG threshold for its detected size (4.5:1 normal/unknown, 3:1 large), while essential non-text controls and graphics use the 3:1 reference target. A brand-profile change invalidates image-audit receipts created under the previous standards.</p>
     </section>
   )
 }

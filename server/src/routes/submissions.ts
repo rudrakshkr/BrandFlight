@@ -3,6 +3,7 @@ import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { auditConfigHash, imageAuditInputHash, sha256Text } from "../lib/audit-receipts.js";
 import { validateReviewDecision } from "../lib/review-validation.js";
+import { evaluateReleaseGate, formatReviewerOverrideComment, getReleaseGateApprovalError } from "../lib/release-gate.js";
 import { canonicalJson, createReleasePassport, verifyReleasePassportHash, type ReleasePassportSnapshot } from "../lib/release-passport.js";
 import {
   requireAuth,
@@ -743,6 +744,7 @@ submissionsRouter.get("/passport/:passportId/verify", async (req, res) => {
         reviewerName: snapshot.approval.reviewerName,
         approvedAt: snapshot.approval.approvedAt,
         decision: snapshot.approval.decision,
+        override: snapshot.approval.override ?? null,
       } : null,
       checks: {
         passportSignature: passportIntegrityValid,
@@ -1134,6 +1136,8 @@ submissionsRouter.post(
       }
 
       let passportDraft: ReturnType<typeof createReleasePassport> | null = null;
+      let approvalRequiresOverride = false;
+      let approvalReleaseGate: ReturnType<typeof evaluateReleaseGate> | null = null;
       if (status === "APPROVED") {
         const brand = await loadAuditBrand(current.brandProfileId);
         if (!brand) return res.status(404).json({ error: "Brand profile not found." });
@@ -1150,14 +1154,25 @@ submissionsRouter.post(
             error: "Approval blocked: the text audit is missing or stale. Return the campaign for a fresh preflight audit before approval.",
           });
         }
+        if (textAudit.semanticStatus !== "completed") {
+          return res.status(409).json({
+            error: "Approval blocked: the AI semantic audit was unavailable. Return the campaign for a fresh audit.",
+          });
+        }
+
         const hasImage = Boolean(current.imageUrl || current.imagePublicId);
         let imageSnapshot: ReleasePassportSnapshot["audit"]["image"] = null;
         let currentImageInputHash: string | null = null;
+        let imageAuditResult: Awaited<ReturnType<typeof validateImageAuditReceipt>> = null;
+
         if (hasImage) {
           if (!current.imageUrl || !current.imagePublicId) {
-            return res.status(409).json({ error: "Approval blocked: the campaign image asset is incomplete." });
+            return res.status(409).json({
+              error: "Approval blocked: the campaign image asset is incomplete.",
+            });
           }
-          const imageAudit = await validateImageAuditReceipt(
+
+          imageAuditResult = await validateImageAuditReceipt(
             current.imageAuditReceiptId,
             current.creatorId,
             current.brandProfileId,
@@ -1166,22 +1181,49 @@ submissionsRouter.post(
             current.imageAltText,
             brand,
           );
-          if (!imageAudit) {
+
+          if (!imageAuditResult) {
             return res.status(409).json({
               error: "Approval blocked: the image audit is missing or stale. Return the campaign for a fresh image audit before approval.",
             });
           }
+
           currentImageInputHash = imageAuditInputHash(
             { secureUrl: current.imageUrl, publicId: current.imagePublicId },
             current.imageAltText ?? "",
           );
+
           imageSnapshot = {
-            receiptId: imageAudit.receiptId,
+            receiptId: imageAuditResult.receiptId,
             inputHash: currentImageInputHash,
             configHash: auditConfigHash(brand, "IMAGE"),
-            resultHash: imageAudit.resultHash,
+            resultHash: imageAuditResult.resultHash,
           };
         }
+
+        // Findings are read from validated receipts, never from client-supplied data.
+        const imageFindings =
+          imageAuditResult &&
+          isRecord(imageAuditResult.result) &&
+          Array.isArray(imageAuditResult.result.findings)
+            ? imageAuditResult.result.findings
+            : [];
+
+        const releaseGate = evaluateReleaseGate([
+          ...textAudit.findings,
+          ...imageFindings,
+        ]);
+        approvalReleaseGate = releaseGate;
+
+        const gateError = getReleaseGateApprovalError(releaseGate, note);
+        if (gateError) {
+          return res.status(409).json({
+            error: gateError,
+            releaseGate,
+          });
+        }
+
+        approvalRequiresOverride = releaseGate.status === "REQUIRES_OVERRIDE";
 
         const approvedAt = new Date().toISOString();
         const snapshot: ReleasePassportSnapshot = {
@@ -1209,6 +1251,15 @@ submissionsRouter.post(
             reviewerId: req.authUser!.id,
             reviewerName: req.authUser!.name,
             approvedAt,
+            ...(approvalRequiresOverride && approvalReleaseGate && note
+              ? {
+                  override: {
+                    reason: note.trim(),
+                    highRiskFindings: approvalReleaseGate.highRiskFindings,
+                    warnings: approvalReleaseGate.warnings,
+                  },
+                }
+              : {}),
           },
         };
         const passportSecret = process.env.RELEASE_PASSPORT_SECRET || process.env.JWT_SECRET || "";
@@ -1237,7 +1288,9 @@ submissionsRouter.post(
         if (typeof note === "string" && note.trim()) {
           await tx.comment.create({
             data: {
-              body: note.trim(),
+              body: approvalRequiresOverride && approvalReleaseGate && note
+                ? formatReviewerOverrideComment(note, approvalReleaseGate)
+                : note.trim(),
               submissionId: current.id,
               authorId: req.authUser!.id,
             },
@@ -1280,6 +1333,11 @@ submissionsRouter.post("/:id/comments", requireAuth, async (req, res) => {
   if (!isRecord(body) || !nonEmptyString(body.body) || body.body.length > 2000) {
     return res.status(400).json({
       error: "Comment body is required and must be at most 2,000 characters.",
+    });
+  }
+  if (/^REVIEWER OVERRIDE\b/i.test(body.body.trim())) {
+    return res.status(400).json({
+      error: "Reviewer override records are created only by the approval workflow.",
     });
   }
 
