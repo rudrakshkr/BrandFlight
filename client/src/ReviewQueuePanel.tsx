@@ -37,6 +37,7 @@ interface Finding {
 interface Comment {
   id: string
   body: string
+  overrideReasonCategory?: 'RULE_UNCLEAR' | 'CHANNEL_EXCEPTION' | 'FALSE_POSITIVE' | null
   createdAt: string
   author?: { id: string; name: string; role: string; email: string }
 }
@@ -832,6 +833,18 @@ export default function ReviewQueuePanel({ apiBaseUrl, token, initialSubmissionI
                     ) : comment.body.startsWith('OVERRIDE REQUEST') ? (
                       <>
                         <span className="bf-override-message-badge">Creator override request</span>
+                        {comment.overrideReasonCategory && (
+                          <div className="bf-override-category-summary">
+                            <span>Reason category</span>
+                            <strong>
+                              {comment.overrideReasonCategory === 'RULE_UNCLEAR'
+                                ? 'Rule Unclear'
+                                : comment.overrideReasonCategory === 'CHANNEL_EXCEPTION'
+                                  ? 'Channel Exception'
+                                  : 'False Positive'}
+                            </strong>
+                          </div>
+                        )}
                         <div className="bf-override-message-content">
                           {comment.body.split('\n').slice(1).filter(Boolean).map((line, index) => {
                             const separator = line.indexOf(':')

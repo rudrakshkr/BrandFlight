@@ -34,6 +34,12 @@ enum FindingSeverity {
   ERROR
 }
 
+enum OverrideReasonCategory {
+  RULE_UNCLEAR
+  CHANNEL_EXCEPTION
+  FALSE_POSITIVE
+}
+
 enum AuditReceiptKind {
   TEXT
   IMAGE
@@ -184,9 +190,10 @@ model Revision {
 }
 
 model Comment {
-  id           String     @id @default(cuid())
-  body         String     @db.Text
-  submissionId String
+  id                    String                 @id @default(cuid())
+  body                  String                 @db.Text
+  overrideReasonCategory OverrideReasonCategory?
+  submissionId          String
   submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
   authorId     String
   author       User       @relation(fields: [authorId], references: [id])

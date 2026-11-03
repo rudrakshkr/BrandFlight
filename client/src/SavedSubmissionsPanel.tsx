@@ -45,6 +45,7 @@ export interface SubmissionDetail {
   comments: Array<{
     id: string
     body: string
+    overrideReasonCategory?: 'RULE_UNCLEAR' | 'CHANNEL_EXCEPTION' | 'FALSE_POSITIVE' | null
     createdAt: string
     author?: { id: string; name: string; email: string; role: string }
   }>

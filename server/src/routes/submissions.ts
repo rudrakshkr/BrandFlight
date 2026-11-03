@@ -1363,6 +1363,17 @@ submissionsRouter.post("/:id/comments", requireAuth, async (req, res) => {
     });
   }
   const commentBody = body.body.trim();
+  const isOverrideRequest = /^OVERRIDE REQUEST(?:\r?\n|$)/i.test(commentBody);
+  const validOverrideCategories = ["RULE_UNCLEAR", "CHANNEL_EXCEPTION", "FALSE_POSITIVE"] as const;
+  const overrideReasonCategory = body.overrideReasonCategory;
+  if (
+    (isOverrideRequest && !validOverrideCategories.includes(overrideReasonCategory as typeof validOverrideCategories[number])) ||
+    (!isOverrideRequest && overrideReasonCategory !== undefined)
+  ) {
+    return res.status(400).json({
+      error: "Override requests require a valid reason category: RULE_UNCLEAR, CHANNEL_EXCEPTION, or FALSE_POSITIVE.",
+    });
+  }
   if (/^(?:REVIEWER OVERRIDE|CHANGE REQUEST|OVERRIDE DECISION)\b/i.test(commentBody)) {
     return res.status(400).json({
       error: "Review decision records are created only by the review workflow.",
@@ -1383,7 +1394,8 @@ submissionsRouter.post("/:id/comments", requireAuth, async (req, res) => {
 
     const comment = await prisma.comment.create({
       data: {
-        body: body.body.trim(),
+        body: commentBody,
+        overrideReasonCategory: isOverrideRequest ? overrideReasonCategory as "RULE_UNCLEAR" | "CHANNEL_EXCEPTION" | "FALSE_POSITIVE" : null,
         submissionId: current.id,
         authorId: req.authUser!.id,
       },

@@ -13,6 +13,7 @@ import ApprovedCampaignsPanel from './ApprovedCampaignsPanel'
 
 type RuleCategory = 'TONE' | 'TERMINOLOGY' | 'CLAIM' | 'VISUAL' | 'ACCESSIBILITY'
 type FindingSeverity = 'INFO' | 'WARNING' | 'ERROR'
+type OverrideReasonCategory = 'RULE_UNCLEAR' | 'CHANNEL_EXCEPTION' | 'FALSE_POSITIVE'
 type ActiveView = 'workspace' | 'image' | 'rulebook' | 'submissions' | 'review' | 'manager' | 'approved'
 
 const ROUTE_BY_VIEW: Record<ActiveView, string> = {
@@ -442,6 +443,7 @@ export function App() {
   const canReauditSavedImage = Boolean(editingSubmissionId && !imageFile && imagePreviewUrl)
   const [overrideTarget, setOverrideTarget] = useState<{ groupId: string; title: string; ruleCodes: string[]; evidences: string[] } | null>(null)
   const [overrideReason, setOverrideReason] = useState('')
+  const [overrideReasonCategory, setOverrideReasonCategory] = useState<OverrideReasonCategory | ''>('')
   const [overrideBusy, setOverrideBusy] = useState(false)
   const [overrideError, setOverrideError] = useState<string | null>(null)
 
@@ -957,6 +959,7 @@ export function App() {
       evidences: evidence,
     })
     setOverrideReason('')
+    setOverrideReasonCategory('')
     setOverrideError(null)
   }
 
@@ -964,6 +967,10 @@ export function App() {
     event.preventDefault()
     if (!overrideTarget || !editingSubmissionId || !authSession) return
     const justification = overrideReason.trim()
+    if (!overrideReasonCategory) {
+      setOverrideError('Choose the reason category that best describes this request.')
+      return
+    }
     if (justification.length < 15 || justification.length > 2000) {
       setOverrideError('Provide a justification of 15–2,000 characters.')
       return
@@ -983,7 +990,7 @@ export function App() {
       const response = await fetch(`${API_BASE_URL}/api/submissions/${encodeURIComponent(editingSubmissionId)}/comments`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
-        body: JSON.stringify({ body }),
+        body: JSON.stringify({ body, overrideReasonCategory }),
       })
       const data = (await response.json().catch(() => null)) as {
         comment?: SubmissionDetail['comments'][number]
@@ -998,6 +1005,7 @@ export function App() {
       })
       setOverrideTarget(null)
       setOverrideReason('')
+      setOverrideReasonCategory('')
     } catch (err) {
       setOverrideError(err instanceof Error ? err.message : 'Unable to submit override request.')
     } finally {
@@ -2598,28 +2606,53 @@ export function App() {
                   <div className="bf-card-body">
                     {reviewerComments.length > 0 ? (
                       <div className="bf-creator-feedback-list">
-                        {reviewerComments.map((comment) => (
-                          <article className={`bf-creator-feedback-item${comment.body.startsWith('CHANGE REQUEST') ? ' bf-creator-feedback-item-request' : ''}`} key={comment.id}>
-                            <div className="bf-creator-feedback-heading">
-                              <strong>{comment.author?.name ?? 'Reviewer'}</strong>
-                              <span className="bf-creator-feedback-role">
-                                {comment.author?.role ?? 'REVIEWER'}
-                              </span>
-                            </div>
-                            {comment.body.startsWith('CHANGE REQUEST') ? (
-                              <>
-                                <span className="bf-change-request-badge">Changes requested · action required</span>
-                                <p className="bf-change-request-note">{comment.body.split('\n').slice(1).join('\n').trim()}</p>
-                              </>
-                            ) : <p className="bf-creator-feedback-note">{comment.body}</p>}
-                            <time
-                              className="bf-creator-feedback-time"
-                              dateTime={comment.createdAt}
+                        {reviewerComments.map((comment) => {
+                          const normalizedBody = comment.body.replace(/^\uFEFF/, '').trimStart()
+                          const bodyLines = normalizedBody.split(/\r?\n/)
+                          const isOverrideDecision = /^OVERRIDE DECISION(?:\r?\n|$)/i.test(normalizedBody)
+                          const decision = bodyLines.find((line) => /^Decision:\s*/i.test(line))?.replace(/^Decision:\s*/i, '').trim().toUpperCase()
+                          const decisionTone = decision === 'ACCEPTED' ? 'accepted' : decision === 'REJECTED' ? 'rejected' : ''
+                          const decisionNote = bodyLines.find((line) => /^Decision note:\s*/i.test(line))?.replace(/^Decision note:\s*/i, '').trim()
+                          const isChangeRequest = /^CHANGE REQUEST(?:\r?\n|$)/i.test(normalizedBody)
+
+                          return (
+                            <article
+                              className={`bf-creator-feedback-item${isChangeRequest ? ' bf-creator-feedback-item-request' : ''}${isOverrideDecision ? ` bf-creator-feedback-item-decision ${decisionTone}` : ''}`}
+                              key={comment.id}
                             >
-                              {new Date(comment.createdAt).toLocaleString()}
-                            </time>
-                          </article>
-                        ))}
+                              <div className="bf-creator-feedback-heading">
+                                <strong>{comment.author?.name ?? 'Reviewer'}</strong>
+                                <span className="bf-creator-feedback-role">
+                                  {comment.author?.role ?? 'REVIEWER'}
+                                </span>
+                              </div>
+                              {isOverrideDecision ? (
+                                <>
+                                  <span className={`bf-override-decision-badge ${decisionTone}`}>
+                                    {decision === 'ACCEPTED' ? 'Override request accepted' : decision === 'REJECTED' ? 'Override request rejected' : 'Override request decision'}
+                                  </span>
+                                  {decisionNote && (
+                                    <div className="bf-creator-feedback-decision-note">
+                                      <span>Reviewer rationale</span>
+                                      <p>{decisionNote}</p>
+                                    </div>
+                                  )}
+                                </>
+                              ) : isChangeRequest ? (
+                                <>
+                                  <span className="bf-change-request-badge">Changes requested · action required</span>
+                                  <p className="bf-change-request-note">{bodyLines.slice(1).join('\n').trim()}</p>
+                                </>
+                              ) : <p className="bf-creator-feedback-note">{comment.body}</p>}
+                              <time
+                                className="bf-creator-feedback-time"
+                                dateTime={comment.createdAt}
+                              >
+                                {new Date(comment.createdAt).toLocaleString()}
+                              </time>
+                            </article>
+                          )
+                        })}
                       </div>
                     ) : (
                       <div className="bf-creator-feedback-empty">
@@ -2697,13 +2730,27 @@ export function App() {
               {overrideTarget.evidences.length > 0 && <p>Flagged evidence: {overrideTarget.evidences.join(' / ')}</p>}
             </div>
             <form className="bf-override-form" onSubmit={(event) => void handleSubmitOverrideRequest(event)}>
-              <label htmlFor="bf-override-reason">Why should this finding be reviewed for an exception?</label>
+              <label htmlFor="bf-override-category">Why are you requesting this exception?</label>
+              <select
+                id="bf-override-category"
+                className="bf-override-category-select"
+                value={overrideReasonCategory}
+                onChange={(event) => setOverrideReasonCategory(event.target.value as OverrideReasonCategory | '')}
+                required
+                disabled={overrideBusy}
+              >
+                <option value="">Choose a reason category</option>
+                <option value="RULE_UNCLEAR">Rule Unclear — the guidance is ambiguous or lacks context</option>
+                <option value="CHANNEL_EXCEPTION">Channel Exception — this channel or format needs different treatment</option>
+                <option value="FALSE_POSITIVE">False Positive — the flagged content does not violate the rule</option>
+              </select>
+              <label htmlFor="bf-override-reason">Explain your request</label>
               <textarea id="bf-override-reason" value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} minLength={15} maxLength={2000} rows={5} required placeholder="Explain the campaign context, why the rule may not apply, and any supporting evidence." disabled={overrideBusy} />
-              <p className="bf-override-help">The request will be saved in this campaign's discussion and visible to reviewers/managers.</p>
+              <p className="bf-override-help">The category helps governance reporting. The explanation provides context for the reviewer/manager. Neither automatically clears the finding or bypasses the audit.</p>
               {overrideError && <p className="bf-override-error" role="alert">{overrideError}</p>}
               <div className="bf-override-actions">
                 <button type="button" className="bf-btn-secondary" onClick={() => setOverrideTarget(null)} disabled={overrideBusy}>Cancel</button>
-                <button type="submit" className="bf-btn-primary" disabled={overrideBusy || overrideReason.trim().length < 15}>{overrideBusy ? 'Sending request…' : 'Send override request'}</button>
+                <button type="submit" className="bf-btn-primary" disabled={overrideBusy || !overrideReasonCategory || overrideReason.trim().length < 15}>{overrideBusy ? 'Sending request…' : 'Send override request'}</button>
               </div>
             </form>
           </section>

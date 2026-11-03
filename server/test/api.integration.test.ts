@@ -415,7 +415,6 @@ if (!testDatabaseUrl) {
       const draft = await createDraft("Discussion test", "This campaign copy is being reviewed.", false);
       const commentBodies = [
         "Please review the source wording before publication.",
-        "OVERRIDE REQUEST\nRule(s): TERM-01\nFinding: Contextual terminology\nFlagged evidence: revolutionary\nJustification: This is a direct quotation in an educational campaign and is not a product performance promise.",
       ];
       for (const body of commentBodies) {
         const { response, data } = await requestJson(`/api/submissions/${draft.id}/comments`, {
@@ -424,7 +423,28 @@ if (!testDatabaseUrl) {
         }, creatorToken);
         assert.equal(response.status, 201, JSON.stringify(data));
         assert.equal(data.comment.body, body);
+        assert.equal(data.comment.overrideReasonCategory, null);
       }
+
+      const overrideBody = "OVERRIDE REQUEST\nRule(s): TERM-01\nFinding: Contextual terminology\nFlagged evidence: revolutionary\nCreator justification: This is a direct quotation in an educational campaign and is not a product performance promise.";
+      const { response: missingCategoryResponse } = await requestJson(`/api/submissions/${draft.id}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ body: overrideBody }),
+      }, creatorToken);
+      assert.equal(missingCategoryResponse.status, 400);
+
+      const { response: invalidCategoryResponse } = await requestJson(`/api/submissions/${draft.id}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ body: overrideBody, overrideReasonCategory: "OTHER" }),
+      }, creatorToken);
+      assert.equal(invalidCategoryResponse.status, 400);
+
+      const { response: overrideResponse, data: overrideData } = await requestJson(`/api/submissions/${draft.id}/comments`, {
+        method: "POST",
+        body: JSON.stringify({ body: overrideBody, overrideReasonCategory: "RULE_UNCLEAR" }),
+      }, creatorToken);
+      assert.equal(overrideResponse.status, 201, JSON.stringify(overrideData));
+      assert.equal(overrideData.comment.overrideReasonCategory, "RULE_UNCLEAR");
       const { response, data } = await requestJson(`/api/submissions/${draft.id}`, {}, creatorToken);
       assert.equal(response.status, 200);
       assert.equal(data.submission.comments.length, 2);
@@ -443,7 +463,7 @@ if (!testDatabaseUrl) {
       const requestBody = "OVERRIDE REQUEST\nRule(s): TERM-01\nFinding: Contextual terminology\nFlagged evidence: revolutionary\nCreator justification: The term appears in a direct quotation and is not presented as a product claim.";
       const { response: requestResponse, data: requestData } = await requestJson(`/api/submissions/${draft.id}/comments`, {
         method: "POST",
-        body: JSON.stringify({ body: requestBody }),
+        body: JSON.stringify({ body: requestBody, overrideReasonCategory: "CHANNEL_EXCEPTION" }),
       }, creatorToken);
       assert.equal(requestResponse.status, 201, JSON.stringify(requestData));
 
