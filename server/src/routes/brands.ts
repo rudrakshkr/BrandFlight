@@ -175,7 +175,8 @@ function parseColors(value: unknown): string[] | null {
 }
 
 function databaseError(res: Response, error: unknown, message: string) {
-  console.error(message, error);
+  // Database exceptions can include brand rule/fact content; do not log raw details.
+  console.error(message);
 
   if (isRecord(error) && error.code === "P2002") {
     return res.status(409).json({
@@ -187,7 +188,7 @@ function databaseError(res: Response, error: unknown, message: string) {
     return res.status(404).json({ error: "Record not found." });
   }
 
-  return res.status(500).json({ error });
+  return res.status(500).json({ error: message });
 }
 
 async function requireBrand(brandProfileId: string) {
@@ -339,13 +340,13 @@ brandsRouter.post("/:brandProfileId/assets/logo", (req, res) => {
             secure: true,
           });
           await cloudinary.uploader.destroy(previous.publicId, { resource_type: "image" });
-        } catch (cleanupError) {
-          console.warn("Unable to remove replaced logo from Cloudinary:", cleanupError);
+        } catch {
+          console.warn("Unable to remove replaced logo from Cloudinary.");
         }
       }
       return res.status(201).json(asset);
-    })().catch((error: unknown) => {
-      console.error("Unable to save approved brand logo:", error);
+    })().catch(() => {
+      console.error("Unable to save approved brand logo.");
       if (!res.headersSent) return res.status(500).json({ error: "Unable to save the approved logo." });
     });
   });
@@ -402,8 +403,8 @@ brandsRouter.delete("/:brandProfileId/assets/logo", async (req, res) => {
         secure: true,
       });
       await cloudinary.uploader.destroy(existing.publicId, { resource_type: "image" });
-    } catch (cleanupError) {
-      console.warn("Unable to remove deleted approved logo from Cloudinary:", cleanupError);
+    } catch {
+      console.warn("Unable to remove deleted approved logo from Cloudinary.");
     }
     return res.status(204).end();
   } catch (error) {

@@ -297,7 +297,8 @@ async function loadAccessibleSubmission(
 }
 
 function handleError(res: Response, error: unknown, message: string) {
-  console.error(message, error);
+  // Database exceptions can include persisted user content; keep logs metadata-free.
+  console.error(message);
 
   if (isRecord(error) && error.code === "P2003") {
     return res.status(400).json({ error: "A referenced record does not exist." });

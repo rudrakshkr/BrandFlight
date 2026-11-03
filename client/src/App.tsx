@@ -99,6 +99,11 @@ interface AuditApiResponse {
   totalFindings: number
   findings: RawAuditFinding[]
   semanticStatus: 'completed' | 'unavailable'
+  privacy?: {
+    masked: boolean
+    totalUniqueValues: number
+    categories: Array<{ type: string; count: number }>
+  }
 }
 
 
@@ -407,6 +412,7 @@ export function App() {
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null)
   const imageObjectUrlRef = useRef<string | null>(null)
   const [imageAltText, setImageAltText] = useState('')
+  const [imagePrivacyAcknowledged, setImagePrivacyAcknowledged] = useState(false)
   const [isImageAuditing, setIsImageAuditing] = useState(false)
   const [imageAuditError, setImageAuditError] = useState<string | null>(null)
   const [imageAuditResult, setImageAuditResult] =
@@ -616,6 +622,7 @@ export function App() {
         setDraftChannel('Website')
         setContent(submission.contentText)
         setImageFile(null)
+        setImagePrivacyAcknowledged(false)
         setImageAltText(submission.imageAltText ?? '')
         setAuditedImageAltText(
           submission.imageAuditData ? (submission.imageAltText ?? '') : null,
@@ -756,6 +763,10 @@ export function App() {
       setImageAuditError('Choose an image or open a saved draft that already has a campaign image.')
       return
     }
+    if (!imagePrivacyAcknowledged) {
+      setImageAuditError('Review the image privacy notice and confirm the image has no unredacted personal or confidential information.')
+      return
+    }
 
     setIsImageAuditing(true)
     setImageAuditError(null)
@@ -764,6 +775,7 @@ export function App() {
       const formData = new FormData()
       formData.append('brandProfileId', BRAND_PROFILE_ID)
       formData.append('altText', imageAltText.trim())
+      formData.append('privacyAcknowledged', 'true')
       if (imageFile) {
         formData.append('image', imageFile)
       } else if (editingSubmissionId) {
@@ -1029,12 +1041,16 @@ export function App() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authSession.token}` },
         body: JSON.stringify({ brandProfileId: BRAND_PROFILE_ID, content }),
       })
-      const data = await response.json().catch(() => null) as { refinedContent?: string; error?: string } | null
+      const data = await response.json().catch(() => null) as { refinedContent?: string; error?: string; privacy?: { totalUniqueValues?: number; categories?: Array<{ type: string; count: number }> } } | null
       if (!response.ok || typeof data?.refinedContent !== 'string' || !data.refinedContent.trim()) {
         throw new Error(data?.error ?? `Could not refine copy (HTTP ${response.status}).`)
       }
+      const maskedCount = data.privacy?.totalUniqueValues ?? 0
+      const privacyNote = maskedCount > 0
+        ? ` ${maskedCount} unique sensitive value${maskedCount === 1 ? ' was' : 's were'} temporarily masked before Gemini processing.`
+        : ' Supported text-PII patterns were checked before Gemini processing.'
       if (data.refinedContent.trim() === content.trim()) {
-        setRefineMessage('No text changes were suggested. Run Preflight Audit to verify the current copy.')
+        setRefineMessage(`No text changes were suggested.${privacyNote} Run Preflight Audit to verify the current copy.`)
         return
       }
       setContent(data.refinedContent.trim())
@@ -1045,7 +1061,7 @@ export function App() {
       setGuidanceCopyFeedback(null)
       setSaveDraftError(null)
       setSaveDraftMessage(null)
-      setRefineMessage('Copy refined. Review the wording, then run Preflight Audit before saving or submitting.')
+      setRefineMessage(`Copy refined.${privacyNote} Review the wording, then run Preflight Audit before saving or submitting.`)
     } catch (err) {
       setRefineError(err instanceof Error ? err.message : 'Could not refine copy.')
     } finally {
@@ -1463,6 +1479,7 @@ export function App() {
     setDraftTitle(submission.title)
     setContent(submission.contentText)
     setImageFile(null)
+    setImagePrivacyAcknowledged(false)
     setImageAltText(submission.imageAltText ?? '')
     setAuditedImageAltText(
       submission.imageAuditData ? (submission.imageAltText ?? '') : null,
@@ -1506,6 +1523,7 @@ export function App() {
     setDraftChannel('Website')
     setContent('')
     setImageFile(null)
+    setImagePrivacyAcknowledged(false)
     setImageAltText('')
     setImageAuditResult(null)
     setAuditedImageAltText(null)
@@ -1832,7 +1850,16 @@ export function App() {
                         <label className="bf-label" htmlFor="bf-editor-input">
                           Copy to evaluate
                         </label>
-                        <span className="bf-counter">{content.length} characters</span>
+                        <div className="bf-editor-meta">
+                          <span className="bf-counter">{content.length} characters</span>
+                          <span
+                            className="bf-privacy-inline"
+                            title="Recognizable email, UPI, Indian phone, Aadhaar-shaped, PAN-shaped and Luhn-valid card patterns are temporarily masked before Gemini text processing. Detection is pattern-based and may miss other personal information."
+                          >
+                            <span aria-hidden="true">✓</span>
+                            PII masking on
+                          </span>
+                        </div>
                       </div>
                       <textarea
                         id="bf-editor-input"
@@ -1971,6 +1998,22 @@ export function App() {
                   </div>
 
                   <div className="bf-card-body">
+                    <div className="bf-image-privacy-warning" role="note">
+                      <strong>Image privacy check required</strong>
+                      <p>
+                        Image pixels and embedded text are not PII-masked in this release. Running Image Audit uploads the image to Cloudinary and may send it to Gemini for visual checks. Redact personal or confidential details in the image before proceeding.
+                      </p>
+                      <label className="bf-image-privacy-confirm">
+                        <input
+                          type="checkbox"
+                          checked={imagePrivacyAcknowledged}
+                          disabled={isImageAuditing}
+                          required
+                          onChange={(event) => setImagePrivacyAcknowledged(event.target.checked)}
+                        />
+                        <span>I confirm this image contains no unredacted personal or confidential information.</span>
+                      </label>
+                    </div>
                     <div className="bf-field">
                       <label className="bf-label" htmlFor="bf-image-file">
                         Campaign image
@@ -1985,6 +2028,7 @@ export function App() {
                         onChange={(event) => {
                           const selectedFile = event.currentTarget.files?.[0] ?? null
                           setImageFile(selectedFile)
+                          setImagePrivacyAcknowledged(false)
                           setImageAuditResult(null)
                           setAuditedImageAltText(null)
                           setImageAuditError(null)
@@ -2442,6 +2486,31 @@ export function App() {
                                 <code>server/.env</code>.
                               </div>
                             </div>
+                          </div>
+                        )}
+
+                        {!auditRestoredFromSubmission && auditResult.privacy && (
+                          <div className="bf-privacy-result" role="status" aria-live="polite">
+                            <span className="bf-privacy-result-icon" aria-hidden="true">✓</span>
+                            <div className="bf-privacy-result-copy">
+                              <strong>
+                                {auditResult.privacy.totalUniqueValues > 0
+                                  ? `${auditResult.privacy.totalUniqueValues} sensitive value${auditResult.privacy.totalUniqueValues === 1 ? '' : 's'} masked before Gemini`
+                                  : 'No supported PII patterns detected'}
+                              </strong>
+                              <small>
+                                {auditResult.privacy.categories.length > 0
+                                  ? auditResult.privacy.categories.map((item) => `${item.type.replace(/_/g, ' ').toLowerCase()} ${item.count}`).join(' · ')
+                                  : 'Pattern-based detection only'}
+                                {' '}· Original values restored in this workspace
+                              </small>
+                            </div>
+                            <details className="bf-privacy-scope">
+                              <summary>Scope</summary>
+                              <p>
+                                Pattern-based detection can miss names, addresses, dates of birth and other identifiers. Original campaign text still reaches your BrandFlight server and may be retained in drafts or audit evidence.
+                              </p>
+                            </details>
                           </div>
                         )}
 

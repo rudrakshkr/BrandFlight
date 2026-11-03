@@ -10,6 +10,8 @@ import { authRouter } from "./routes/auth.js";
 import { submissionsRouter } from "./routes/submissions.js";
 import { imageAuditRouter } from "./routes/image-audit.js";
 import { requireAuth, requireRoles } from "./middleware/auth.js";
+import { createPiiMaskingSession, findPiiRanges } from "./lib/pii-masking.js";
+import { findUnverifiedNumericClaims } from "./lib/numeric-claims.js";
 
 export const app = express();
 
@@ -43,14 +45,31 @@ app.post("/api/audit/refine", requireAuth, requireRoles("CREATOR"), async (req, 
     });
     if (!brand) return res.status(404).json({ error: "Brand profile not found." });
 
-    const refinedContent = await refineMarketingCopy(
-      payload.content,
-      brand.rules.map(({ ruleCode, category, title, description }) => ({ ruleCode, category, title, description })),
-      brand.facts.map(({ factCode, claim }) => ({ factCode, claim })),
-    );
-    return res.json({ brand: { id: brand.id, name: brand.name }, refinedContent });
-  } catch (error) {
-    console.error("Copy refinement failed:", error);
+    const pii = createPiiMaskingSession();
+    const maskedContent = pii.mask(payload.content);
+    const maskedRules = brand.rules.map(({ ruleCode, category, title, description }) => ({
+      ruleCode,
+      category,
+      title: pii.mask(title),
+      description: pii.mask(description),
+    }));
+    const maskedFacts = brand.facts.map(({ factCode, claim }) => ({
+      factCode,
+      claim: pii.mask(claim),
+    }));
+
+    // The model receives only masked campaign text and masked free-text brand context.
+    // The reversible map remains request-scoped and is discarded after this response.
+    const maskedRefinement = await refineMarketingCopy(maskedContent, maskedRules, maskedFacts);
+    const refinedContent = pii.restore(maskedRefinement);
+    return res.json({
+      brand: { id: brand.id, name: brand.name },
+      refinedContent,
+      privacy: pii.summary(),
+    });
+  } catch {
+    // Do not log provider errors here: SDK errors may include request details.
+    console.error("Copy refinement failed.");
     return res.status(502).json({ error: "Unable to refine copy. Check the Gemini configuration and try again." });
   }
 });
@@ -84,8 +103,11 @@ app.post("/api/audit", requireAuth, requireRoles("CREATOR"), async (req, res) =>
     }
 
     const findings: Array<Record<string, string>> = [];
+    const pii = createPiiMaskingSession();
+    const piiRanges = findPiiRanges(content);
 
-    // Check terminology against configured rules.
+    // Check terminology against configured rules. Numeric claim detection below
+    // reuses the same request-scoped PII ranges to avoid flagging identifier digits.
     for (const rule of brand.rules) {
       if (!rule.pattern || findings.length >= 20) continue;
 
@@ -114,30 +136,15 @@ app.post("/api/audit", requireAuth, requireRoles("CREATOR"), async (req, res) =>
       }
     }
 
-    // Compare numerical expressions against approved fact expressions.
-    const extractNumbers = (text: string) =>
-      text.match(
-        /(?:₹|\$)?\s*\d+(?:[.,]\d+)?\s*(?:%|percent|days?|hours?|minutes?|months?|years?)?/gi,
-      ) ?? [];
-
-    const normalize = (value: string) =>
-      value.replace(/\s+/g, "").toLowerCase();
-
-    const approvedNumbers = new Set(
-      brand.facts.flatMap((fact) =>
-        extractNumbers(fact.claim).map(normalize),
-      ),
+    // Compare genuine numerical expressions against approved facts, excluding
+    // number fragments already covered by a recognized PII span.
+    const unverifiedNumericClaims = findUnverifiedNumericClaims(
+      content,
+      brand.facts.map((fact) => fact.claim),
+      piiRanges,
     );
 
-    const seen = new Set<string>();
-
-    for (const raw of extractNumbers(content)) {
-      const claim = raw.trim();
-      const key = normalize(claim);
-
-      if (approvedNumbers.has(key) || seen.has(key)) continue;
-      seen.add(key);
-
+    for (const claim of unverifiedNumericClaims) {
       if (findings.length >= 20) break;
 
       findings.push({
@@ -156,21 +163,30 @@ app.post("/api/audit", requireAuth, requireRoles("CREATOR"), async (req, res) =>
     }
 
     let semanticStatus: "completed" | "unavailable" = "completed";
+    const maskedContent = pii.mask(content);
+    const maskedRules = brand.rules.map(({ ruleCode, category, title, description }) => ({
+      ruleCode,
+      category,
+      title: pii.mask(title),
+      description: pii.mask(description),
+    }));
+    const maskedFacts = brand.facts.map(({ factCode, claim }) => ({
+      factCode,
+      claim: pii.mask(claim),
+    }));
 
     try {
-      const semanticFindings = await runSemanticAudit(
-        content,
-        brand.rules.map(({ ruleCode, category, title, description }) => ({
-          ruleCode,
-          category,
-          title,
-          description,
-        })),
-        brand.facts.map(({ factCode, claim }) => ({
-          factCode,
-          claim,
-        })),
-      );
+      const maskedFindings = await runSemanticAudit(maskedContent, maskedRules, maskedFacts);
+      const semanticFindings = maskedFindings.map((finding) => ({
+        ...finding,
+        title: pii.restore(finding.title),
+        message: pii.restore(finding.message),
+        evidence: pii.restore(finding.evidence),
+        originalSpan: pii.restore(finding.originalSpan),
+        suggestedSpan: pii.restore(finding.suggestedSpan),
+        suggestion: pii.restore(finding.suggestion),
+        confidence: pii.restore(finding.confidence),
+      }));
 
       for (const finding of semanticFindings) {
         const duplicate = findings.some(
@@ -184,8 +200,9 @@ app.post("/api/audit", requireAuth, requireRoles("CREATOR"), async (req, res) =>
           findings.push(finding);
         }
       }
-    } catch (error) {
-      console.error("Gemini audit failed:", error);
+    } catch {
+      // Provider errors are intentionally not logged with request details.
+      console.error("Gemini audit failed or returned an unsafe placeholder response.");
       semanticStatus = "unavailable";
     }
 
@@ -194,6 +211,7 @@ app.post("/api/audit", requireAuth, requireRoles("CREATOR"), async (req, res) =>
       totalFindings: findings.length,
       findings,
       semanticStatus,
+      privacy: pii.summary(),
     };
     const auditReceipt = await prisma.auditReceipt.create({
       data: {
@@ -208,8 +226,8 @@ app.post("/api/audit", requireAuth, requireRoles("CREATOR"), async (req, res) =>
     });
 
     return res.json({ ...auditResult, auditReceiptId: auditReceipt.id });
-  } catch (error) {
-    console.error("Audit failed:", error);
+  } catch {
+    console.error("Audit failed.");
     return res.status(500).json({ error: "Unable to audit content." });
   }
 });

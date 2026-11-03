@@ -316,11 +316,46 @@ if (!testDatabaseUrl) {
       assert.equal(data.semanticStatus, "unavailable");
     });
 
+    it("reports masked text PII categories without returning any reversible values", async () => {
+      const content = "Contact help@example.com or +91 98765 43210. UPI: demo.user@okaxis. PAN: ABCDE1234F. Aadhaar: 2345 6789 0123. Card: 4111 1111 1111 1111. Results improve 95%. Plans start at ₹499 per month.";
+      const { response, data } = await requestJson("/api/audit", {
+        method: "POST",
+        body: JSON.stringify({ brandProfileId: brandId, content }),
+      }, creatorToken);
+
+      assert.equal(response.status, 200, JSON.stringify(data));
+      assert.deepEqual(
+        data.privacy.categories.map((item: { type: string }) => item.type),
+        ["EMAIL", "UPI_ID", "INDIAN_PHONE", "AADHAAR", "PAN", "CREDIT_CARD"],
+      );
+      assert.equal(data.privacy.totalUniqueValues, 6);
+      assert.equal(JSON.stringify(data.privacy).includes("help@example.com"), false);
+      assert.equal(JSON.stringify(data.privacy).includes("98765"), false);
+      assert.equal(JSON.stringify(data.privacy).includes("ABCDE1234F"), false);
+      const numericClaims = data.findings
+        .filter((finding: { ruleCode?: string }) => finding.ruleCode === "CLAIM-01")
+        .map((finding: { evidence: string }) => finding.evidence);
+      assert.deepEqual(numericClaims, ["95%"], "PII digit fragments must not become numerical-claim findings");
+    });
+
     it("re-audits a saved draft image after an alt-text-only edit without uploading it again", async () => {
       const originalAltText = "Blue campaign banner with a product launch headline";
+      const unacknowledgedForm = new FormData();
+      unacknowledgedForm.set("brandProfileId", brandId);
+      unacknowledgedForm.set("altText", originalAltText);
+      unacknowledgedForm.set("image", new Blob([imageFixture], { type: "image/png" }), "campaign.png");
+      const unacknowledgedResponse = await fetch(`${baseUrl}/api/audit/image`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${creatorToken}` },
+        body: unacknowledgedForm,
+      });
+      assert.equal(unacknowledgedResponse.status, 400);
+      assert.equal(cloudinaryUploadCount, 0, "An unacknowledged image must not be sent to Cloudinary.");
+
       const form = new FormData();
       form.set("brandProfileId", brandId);
       form.set("altText", originalAltText);
+      form.set("privacyAcknowledged", "true");
       form.set("image", new Blob([imageFixture], { type: "image/png" }), "campaign.png");
 
       const firstResponse = await fetch(`${baseUrl}/api/audit/image`, {
@@ -353,6 +388,7 @@ if (!testDatabaseUrl) {
       reAuditForm.set("brandProfileId", brandId);
       reAuditForm.set("altText", updatedAltText);
       reAuditForm.set("submissionId", draft.id);
+      reAuditForm.set("privacyAcknowledged", "true");
       const uploadCountBeforeReuse = cloudinaryUploadCount;
 
       const reAuditResponse = await fetch(`${baseUrl}/api/audit/image`, {

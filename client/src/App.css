@@ -6992,3 +6992,145 @@ input[type="reset"] {
   .bf-governance-reason-meta { gap: 4px 8px; }
   .bf-governance-rule-footer { align-items: flex-start; flex-direction: column; }
 }
+/* Compact privacy status: always visible in the editor, details only after an audit. */
+.bf-editor-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 7px 10px;
+}
+
+.bf-privacy-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid #d8e9df;
+  border-radius: 999px;
+  background: #f3faf5;
+  color: #34745c;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.bf-privacy-inline > span {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #dcefe3;
+  color: #28684f;
+  font-size: 9px;
+}
+
+.bf-privacy-result {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border: 1px solid #dcebe2;
+  border-radius: 8px;
+  background: #f7fbf8;
+  color: #53675d;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.bf-privacy-result-icon {
+  display: grid;
+  flex: 0 0 21px;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  background: #e1f1e7;
+  color: #287052;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.bf-privacy-result-copy {
+  display: grid;
+  flex: 1 1 180px;
+  min-width: 0;
+  gap: 2px;
+}
+
+.bf-privacy-result-copy strong {
+  color: #245c49;
+  font-size: 11.5px;
+  font-weight: 750;
+}
+
+.bf-privacy-result-copy small {
+  color: #718078;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.bf-privacy-scope {
+  margin-left: auto;
+  color: #547263;
+  font-size: 10px;
+}
+
+.bf-privacy-scope summary {
+  cursor: pointer;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.bf-privacy-scope p {
+  width: min(100%, 340px);
+  margin: 6px 0 0;
+  color: #64756b;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.bf-image-privacy-warning {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 12px 13px;
+  border: 1px solid #f0d8b5;
+  border-radius: 9px;
+  background: #fff9f0;
+  color: #765b38;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.bf-image-privacy-warning > strong {
+  color: #87551c;
+  font-size: 12.5px;
+}
+
+.bf-image-privacy-warning > p {
+  margin: 0;
+}
+
+.bf-image-privacy-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #f1dfc7;
+  color: #614a2e;
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.bf-image-privacy-confirm input {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+  accent-color: #94601e;
+}

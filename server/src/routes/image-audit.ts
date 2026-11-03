@@ -9,6 +9,7 @@ import { analyzeImageTextContrast, compareBrandLogo, type LogoVisualComparison }
 import { buildImageTextContrastReport, type ImageTextContrastReport } from "../lib/image-text-contrast.js";
 import { parseAccessibilityColorPairs } from "../lib/wcag-contrast.js";
 import { sampleAllImageTextRegions } from "../lib/image-text-pixels.js";
+import { createPiiMaskingSession } from "../lib/pii-masking.js";
 import { requireAuth, requireRoles } from "../middleware/auth.js";
 
 export const imageAuditRouter = Router();
@@ -269,6 +270,14 @@ async function extractDominantColors(buffer: Buffer): Promise<string[]> {
 }
 
 async function processImageAudit(req: Request, res: Response) {
+  // Image pixels are not PII-redacted in this release. Require an explicit
+  // acknowledgement before the image can be uploaded to Cloudinary or sent to Gemini.
+  if (req.body?.privacyAcknowledged !== "true") {
+    return res.status(400).json({
+      error: "Confirm that the image contains no personal or confidential information, or has been manually redacted, before running Image Audit.",
+    });
+  }
+
   const requestedBrandProfileId = req.body?.brandProfileId;
   const submissionId = typeof req.body?.submissionId === "string"
     ? req.body.submissionId.trim()
@@ -581,16 +590,27 @@ async function processImageAudit(req: Request, res: Response) {
     try {
       const reference = await downloadApprovedLogoReference(configuredLogo);
       const campaignMimeType = metadata.format === "jpeg" ? "image/jpeg" : metadata.format === "png" ? "image/png" : "image/webp";
+      const logoTextPii = createPiiMaskingSession();
       const comparison = await compareBrandLogo(
         imageBuffer,
         campaignMimeType,
         reference.buffer,
         reference.mimeType,
-        configuredLogo.expectedWordmark,
-        configuredLogo.description,
+        configuredLogo.expectedWordmark === null
+          ? null
+          : logoTextPii.mask(configuredLogo.expectedWordmark),
+        configuredLogo.description === null
+          ? null
+          : logoTextPii.mask(configuredLogo.description),
       );
-      logoVerification = {
+      const restoredComparison: LogoVisualComparison = {
         ...comparison,
+        summary: logoTextPii.restore(comparison.summary),
+        evidence: comparison.evidence.map((entry) => logoTextPii.restore(entry)),
+        suggestions: comparison.suggestions.map((entry) => logoTextPii.restore(entry)),
+      };
+      logoVerification = {
+        ...restoredComparison,
         required: configuredLogo.isRequired,
         referenceLogo: {
           id: configuredLogo.id,
@@ -687,8 +707,8 @@ imageAuditRouter.post("/", requireAuth, requireRoles("CREATOR"), (req, res) => {
       return res.status(400).json({ error: "Unable to process the upload." });
     }
 
-    void processImageAudit(req, res).catch((error: unknown) => {
-      console.error("Image audit failed:", error);
+    void processImageAudit(req, res).catch(() => {
+      // Upload/provider exceptions can contain request details; never write them to logs.
       if (!res.headersSent) {
         res.status(500).json({ error: "Unable to audit the image." });
       }

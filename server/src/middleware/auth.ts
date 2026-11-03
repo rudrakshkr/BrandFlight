@@ -79,8 +79,8 @@ async function authenticateRequest(
     };
 
     return next();
-  } catch (error) {
-    console.error("Authentication lookup failed:", error);
+  } catch {
+    console.error("Authentication lookup failed.");
     return res.status(500).json({ error: "Unable to verify user account." });
   }
 }

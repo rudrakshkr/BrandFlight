@@ -45,8 +45,8 @@ authRouter.post("/login", async (req, res) => {
         role: user.role,
       },
     });
-  } catch (error) {
-    console.error("Login failed:", error);
+  } catch {
+    console.error("Login failed.");
     return res.status(500).json({ error: "Unable to complete login." });
   }
 });
@@ -103,8 +103,8 @@ authRouter.post("/demo-login", async (req, res) => {
         role: user.role,
       },
     });
-  } catch (error) {
-    console.error("Demo login failed:", error);
+  } catch {
+    console.error("Demo login failed.");
     return res.status(500).json({ error: "Unable to open the requested demo role." });
   }
 });
