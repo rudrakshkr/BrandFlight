@@ -5624,6 +5624,16 @@ input[type="reset"] {
 .bf-contrast-copy-error { grid-column: 1 / -1; color: #9a3412; font-size: 11.5px; }
 .bf-contrast-pass-note,
 .bf-contrast-disclaimer { color: #657572; font-size: 11.5px; line-height: 1.5; }
+.bf-contrast-no-recommendation {
+  margin: 0;
+  padding: 11px 12px;
+  border: 1px solid #ead8ae;
+  border-radius: 8px;
+  color: #76551d;
+  background: #fffaf0;
+  font-size: 12px;
+  line-height: 1.5;
+}
 .bf-contrast-disclaimer { padding-top: 10px; border-top: 1px solid #e5ece9; }
 
 @media (max-width: 620px) {

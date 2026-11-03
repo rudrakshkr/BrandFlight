@@ -3,7 +3,7 @@ import {
   contrastRatio,
   isHexColor,
   normalizeHex,
-  recommendAccessibleForeground,
+  recommendClosestPaletteSwatch,
 } from './lib/wcagContrast'
 
 interface Props {
@@ -36,11 +36,11 @@ export default function BrandContrastAnalyzer({ colors }: Props) {
   const previewBackground = backgroundIsValid ? normalizeHex(background) : '#FFFFFF'
   const ratio = pairIsValid ? contrastRatio(foreground, background) : null
 
-  const recommendation = useMemo(
+  const paletteRecommendation = useMemo(
     () => ratio !== null && ratio < 4.5
-      ? recommendAccessibleForeground(foreground, background, 4.5)
+      ? recommendClosestPaletteSwatch(foreground, background, palette, 4.5)
       : null,
-    [foreground, background, ratio],
+    [foreground, background, palette, ratio],
   )
 
   const selectForeground = (value: string) => {
@@ -56,9 +56,9 @@ export default function BrandContrastAnalyzer({ colors }: Props) {
   }
 
   const copyRecommendation = async () => {
-    if (!recommendation) return
+    if (!paletteRecommendation) return
     try {
-      await navigator.clipboard.writeText(recommendation.color)
+      await navigator.clipboard.writeText(paletteRecommendation.color)
       setCopied(true)
       setCopyError('')
       window.setTimeout(() => setCopied(false), 1800)
@@ -74,7 +74,7 @@ export default function BrandContrastAnalyzer({ colors }: Props) {
         <div>
           <span className="bf-contrast-eyebrow">ACCESSIBILITY · WCAG 2.1</span>
           <h3 id="bf-contrast-title">Brand colour contrast</h3>
-          <p>Choose a saved brand colour or enter any custom six-digit hex value.</p>
+          <p>Choose approved brand colours or enter custom hex values. Recommendations are always selected from the approved palette.</p>
         </div>
         <span className="bf-contrast-count">{palette.length} palette colours</span>
       </div>
@@ -144,7 +144,7 @@ export default function BrandContrastAnalyzer({ colors }: Props) {
       </div>
 
       {palette.length === 0 && (
-        <p className="bf-contrast-note">No saved palette colours are available. You can still enter both custom hex values above.</p>
+        <p className="bf-contrast-note">No saved palette colours are available. You can still enter custom hex values, but an approved swatch cannot be recommended until a manager adds brand colours.</p>
       )}
 
       <div className="bf-contrast-preview" style={{ color: previewForeground, backgroundColor: previewBackground }}>
@@ -188,17 +188,17 @@ export default function BrandContrastAnalyzer({ colors }: Props) {
         })}
       </div>
 
-      {recommendation && (
+      {paletteRecommendation && (
         <div className="bf-contrast-recommendation">
           <div className="bf-contrast-recommendation-copy">
-            <span>RECOMMENDED FOREGROUND · AA NORMAL TEXT</span>
-            <strong>{recommendation.color}</strong>
-            <small>{recommendation.adjustment === 'darker' ? 'A darker variation' : 'A lighter variation'} of the selected text colour, keeping the selected background. Contrast: {recommendation.ratio.toFixed(2)}:1.</small>
+            <span>CLOSEST APPROVED SWATCH · AA NORMAL TEXT</span>
+            <strong>{paletteRecommendation.color}</strong>
+            <small>This is the closest colour in the approved brand palette that meets the 4.5:1 AA target against {previewBackground}. Contrast: {paletteRecommendation.ratio.toFixed(2)}:1. The saved palette has not been changed.</small>
           </div>
-          <span className="bf-contrast-recommendation-swatch" style={{ backgroundColor: recommendation.color, color: previewBackground }} aria-label={`Recommended colour ${recommendation.color}`}>Aa</span>
+          <span className="bf-contrast-recommendation-swatch" style={{ backgroundColor: paletteRecommendation.color, color: previewBackground }} aria-label={`Recommended approved palette colour ${paletteRecommendation.color}`}>Aa</span>
           <div className="bf-contrast-recommendation-actions">
-            <button type="button" className="bf-btn-secondary" onClick={() => selectForeground(recommendation.color)}>
-              Preview recommendation
+            <button type="button" className="bf-btn-secondary" onClick={() => selectForeground(paletteRecommendation.color)}>
+              Preview approved swatch
             </button>
             <button type="button" className="bf-btn-secondary" onClick={() => void copyRecommendation()}>
               {copied ? 'Copied' : 'Copy hex'}
@@ -208,7 +208,13 @@ export default function BrandContrastAnalyzer({ colors }: Props) {
         </div>
       )}
 
-      {!recommendation && ratio !== null && ratio >= 4.5 && (
+      {ratio !== null && ratio < 4.5 && palette.length > 0 && !paletteRecommendation && (
+        <p className="bf-contrast-no-recommendation" role="status">
+          No approved palette colour meets the 4.5:1 AA target against {previewBackground}. Choose a different background or update the approved palette.
+        </p>
+      )}
+
+      {!paletteRecommendation && ratio !== null && ratio >= 4.5 && (
         <p className="bf-contrast-pass-note">This pair meets the WCAG AA minimum for normal-sized text. Check the intended font size and weight in the actual design as well.</p>
       )}
 

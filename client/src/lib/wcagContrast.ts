@@ -1,9 +1,8 @@
 export type ContrastThreshold = 3 | 4.5 | 7
 
-export interface ContrastRecommendation {
+export interface PaletteSwatchRecommendation {
   color: string
   ratio: number
-  adjustment: 'darker' | 'lighter'
 }
 
 function parseHex(hex: string): [number, number, number] | null {
@@ -49,82 +48,70 @@ export function contrastRatio(foreground: string, background: string): number | 
   return (lighter + 0.05) / (darker + 0.05)
 }
 
-function mixHex(from: string, to: string, amount: number): string {
-  const source = parseHex(from)
-  const target = parseHex(to)
-  if (!source || !target) return from
+function toOklab(hex: string): [number, number, number] | null {
+  const rgb = parseHex(hex)
+  if (!rgb) return null
 
-  const channels = source.map((channel, index) =>
-    Math.round(channel + ((target[index] ?? channel) - channel) * amount),
-  )
-  return `#${channels.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`.toUpperCase()
+  const [red, green, blue] = rgb.map((channel) => {
+    const srgb = channel / 255
+    return srgb <= 0.04045 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4
+  })
+
+  const l = 0.4122214708 * red + 0.5363325363 * green + 0.0514459929 * blue
+  const m = 0.2119034982 * red + 0.6806995451 * green + 0.1073969566 * blue
+  const s = 0.0883024619 * red + 0.2817188376 * green + 0.6299787005 * blue
+
+  const lRoot = Math.cbrt(l)
+  const mRoot = Math.cbrt(m)
+  const sRoot = Math.cbrt(s)
+
+  return [
+    0.2104542553 * lRoot + 0.7936177850 * mRoot - 0.0040720468 * sRoot,
+    1.9779984951 * lRoot - 2.4285922050 * mRoot + 0.4505937099 * sRoot,
+    0.0259040371 * lRoot + 0.7827717662 * mRoot - 0.8086757660 * sRoot,
+  ]
 }
 
-function findSmallestAdjustment(
-  foreground: string,
-  background: string,
-  endpoint: '#000000' | '#FFFFFF',
-  minimumRatio: number,
-): ContrastRecommendation | null {
-  const endpointRatio = contrastRatio(endpoint, background)
-  if (endpointRatio === null || endpointRatio < minimumRatio) return null
-
-  let low = 0
-  let high = 1
-  for (let iteration = 0; iteration < 32; iteration += 1) {
-    const middle = (low + high) / 2
-    const candidate = mixHex(foreground, endpoint, middle)
-    const ratio = contrastRatio(candidate, background) ?? 0
-
-    if (ratio >= minimumRatio) high = middle
-    else low = middle
-  }
-
-  const color = mixHex(foreground, endpoint, high)
-  const ratio = contrastRatio(color, background) ?? endpointRatio
-  return {
-    color,
-    ratio,
-    adjustment: endpoint === '#000000' ? 'darker' : 'lighter',
-  }
+function oklabDistance(first: [number, number, number], second: [number, number, number]): number {
+  return Math.hypot(
+    first[0] - second[0],
+    first[1] - second[1],
+    first[2] - second[2],
+  )
 }
 
 /**
- * Finds the smallest RGB interpolation from the current foreground toward
- * black or white that reaches the requested WCAG contrast ratio.
- * The background is held constant; the saved brand palette is never mutated.
+ * Selects the closest colour from the supplied approved palette that meets
+ * the requested contrast ratio against the chosen background. Distance is
+ * measured in OKLab, a perceptual colour space, rather than raw RGB values.
+ * The input palette is never changed and no unapproved colour is generated.
  */
-export function recommendAccessibleForeground(
+export function recommendClosestPaletteSwatch(
   foreground: string,
   background: string,
+  palette: readonly string[],
   minimumRatio: ContrastThreshold = 4.5,
-): ContrastRecommendation | null {
+): PaletteSwatchRecommendation | null {
   const normalizedForeground = normalizeHex(foreground)
-  if (!isHexColor(normalizedForeground) || !isHexColor(background)) return null
+  const normalizedBackground = normalizeHex(background)
+  if (!isHexColor(normalizedForeground) || !isHexColor(normalizedBackground)) return null
 
-  const currentRatio = contrastRatio(normalizedForeground, background)
-  if (currentRatio === null) return null
-  if (currentRatio >= minimumRatio) {
-    return {
-      color: normalizedForeground,
-      ratio: currentRatio,
-      adjustment: 'darker',
-    }
-  }
+  const origin = toOklab(normalizedForeground)
+  if (!origin) return null
 
-  const candidates = [
-    findSmallestAdjustment(normalizedForeground, background, '#000000', minimumRatio),
-    findSmallestAdjustment(normalizedForeground, background, '#FFFFFF', minimumRatio),
-  ].filter((candidate): candidate is ContrastRecommendation => candidate !== null)
+  const candidates = [...new Set(palette.filter(isHexColor).map(normalizeHex))]
+    .map((color) => {
+      const ratio = contrastRatio(color, normalizedBackground)
+      const lab = toOklab(color)
+      return ratio !== null && lab
+        ? { color, ratio, distance: oklabDistance(origin, lab) }
+        : null
+    })
+    .filter((candidate): candidate is { color: string; ratio: number; distance: number } =>
+      candidate !== null && candidate.ratio + 1e-9 >= minimumRatio,
+    )
+    .sort((first, second) => first.distance - second.distance)
 
-  if (candidates.length === 0) return null
-
-  const original = parseHex(normalizedForeground)!
-  return candidates.sort((first, second) => {
-    const firstRgb = parseHex(first.color)!
-    const secondRgb = parseHex(second.color)!
-    const firstDistance = firstRgb.reduce((sum, channel, index) => sum + (channel - (original[index] ?? channel)) ** 2, 0)
-    const secondDistance = secondRgb.reduce((sum, channel, index) => sum + (channel - (original[index] ?? channel)) ** 2, 0)
-    return firstDistance - secondDistance
-  })[0] ?? null
+  const closest = candidates[0]
+  return closest ? { color: closest.color, ratio: closest.ratio } : null
 }
