@@ -3,6 +3,7 @@ import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../lib/prisma.js";
 import { auditConfigHash, imageAuditInputHash, sha256Text } from "../lib/audit-receipts.js";
 import { validateCreatorUpdateSummary, validateReviewDecision } from "../lib/review-validation.js";
+import { buildOverrideGovernanceInsights } from "../lib/governance-insights.js";
 import { evaluateReleaseGate, formatReviewerOverrideComment, getReleaseGateApprovalError } from "../lib/release-gate.js";
 import { canonicalJson, createReleasePassport, verifyReleasePassportHash, type ReleasePassportSnapshot } from "../lib/release-passport.js";
 import {
@@ -430,6 +431,34 @@ async function validateImageAuditReceipt(
     imageName: image.name,
   };
 }
+
+// Aggregate creator override requests into manager-only governance signals.
+// Only structured categories and request/decision outcomes are returned; free-text notes stay private.
+submissionsRouter.get(
+  "/governance/override-insights",
+  requireAuth,
+  requireRoles("MANAGER"),
+  async (_req, res) => {
+    try {
+      const [requests, decisions] = await Promise.all([
+        prisma.comment.findMany({
+          where: { body: { startsWith: "OVERRIDE REQUEST", mode: "insensitive" } },
+          select: { id: true, body: true, overrideReasonCategory: true },
+        }),
+        prisma.comment.findMany({
+          where: { body: { startsWith: "OVERRIDE DECISION", mode: "insensitive" } },
+          select: { body: true },
+          orderBy: { createdAt: "asc" },
+        }),
+      ]);
+
+      const insights = buildOverrideGovernanceInsights(requests, decisions);
+      return res.json({ insights });
+    } catch (error) {
+      return handleError(res, error, "Unable to load governance insights.");
+    }
+  },
+);
 
 // A creator sees their own submissions. Reviewers see their review queue.
 // Managers can inspect all submissions.

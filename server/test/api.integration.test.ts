@@ -498,6 +498,105 @@ if (!testDatabaseUrl) {
       ));
     });
 
+    it("restricts aggregate override governance insights to managers", async () => {
+      const { response: baselineResponse, data: baselineData } = await requestJson(
+        "/api/submissions/governance/override-insights",
+        {},
+        managerToken,
+      );
+      assert.equal(baselineResponse.status, 200, JSON.stringify(baselineData));
+      const baseline = baselineData.insights;
+
+      const draft = await createDraft("Governance insights test", "The workspace helps teams coordinate projects.", true);
+      const { response: submitResponse, data: submitData } = await requestJson(`/api/submissions/${draft.id}/submit`, {
+        method: "POST",
+        body: JSON.stringify({ changeSummary: "Please review the campaign context and the cited rule references." }),
+      }, creatorToken);
+      assert.equal(submitResponse.status, 200, JSON.stringify(submitData));
+
+      const createOverrideRequest = async (category: string, ruleCodes: string, note: string) => {
+        const body = [
+          "OVERRIDE REQUEST",
+          `Rule(s): ${ruleCodes}`,
+          "Finding: Governance insights test finding",
+          `Creator justification: ${note}`,
+        ].join("\n");
+        const result = await requestJson(`/api/submissions/${draft.id}/comments`, {
+          method: "POST",
+          body: JSON.stringify({ body, overrideReasonCategory: category }),
+        }, creatorToken);
+        assert.equal(result.response.status, 201, JSON.stringify(result.data));
+        return result.data.comment.id as string;
+      };
+
+      const acceptedRequestId = await createOverrideRequest(
+        "RULE_UNCLEAR",
+        "TERM-01, CLAIM-01",
+        "The rule boundary is unclear in this campaign context.",
+      );
+      const rejectedRequestId = await createOverrideRequest(
+        "RULE_UNCLEAR",
+        "TERM-01",
+        "The rule boundary is unclear when this terminology appears in this channel.",
+      );
+      await createOverrideRequest(
+        "FALSE_POSITIVE",
+        "CLAIM-01",
+        "The current detection appears to match an unrelated phrase.",
+      );
+
+      const acceptedPath = `/api/submissions/${draft.id}/override-requests/${acceptedRequestId}/decision`;
+      const { response: acceptedResponse } = await requestJson(acceptedPath, {
+        method: "POST",
+        body: JSON.stringify({ decision: "ACCEPTED", note: "The supplied context supports this acknowledgement." }),
+      }, reviewerToken);
+      assert.equal(acceptedResponse.status, 201);
+
+      const rejectedPath = `/api/submissions/${draft.id}/override-requests/${rejectedRequestId}/decision`;
+      const { response: rejectedResponse } = await requestJson(rejectedPath, {
+        method: "POST",
+        body: JSON.stringify({ decision: "REJECTED", note: "The rule still applies to this campaign placement." }),
+      }, managerToken);
+      assert.equal(rejectedResponse.status, 201);
+
+      const { response: creatorResponse } = await requestJson(
+        "/api/submissions/governance/override-insights",
+        {},
+        creatorToken,
+      );
+      assert.equal(creatorResponse.status, 403);
+
+      const { response: reviewerResponse } = await requestJson(
+        "/api/submissions/governance/override-insights",
+        {},
+        reviewerToken,
+      );
+      assert.equal(reviewerResponse.status, 403);
+
+      const { response: insightsResponse, data: insightsData } = await requestJson(
+        "/api/submissions/governance/override-insights",
+        {},
+        managerToken,
+      );
+      assert.equal(insightsResponse.status, 200, JSON.stringify(insightsData));
+
+      const insights = insightsData.insights;
+      assert.equal(insights.totalRequests, baseline.totalRequests + 3);
+      assert.equal(insights.pending, baseline.pending + 1);
+      assert.equal(insights.accepted, baseline.accepted + 1);
+      assert.equal(insights.rejected, baseline.rejected + 1);
+      assert.equal(
+        insights.categories.find((item: { category: string }) => item.category === "RULE_UNCLEAR").total,
+        baseline.categories.find((item: { category: string }) => item.category === "RULE_UNCLEAR").total + 2,
+      );
+      assert.equal(
+        insights.categories.find((item: { category: string }) => item.category === "FALSE_POSITIVE").total,
+        baseline.categories.find((item: { category: string }) => item.category === "FALSE_POSITIVE").total + 1,
+      );
+      assert.equal(JSON.stringify(insights).includes("The rule boundary is unclear"), false);
+      assert.equal(JSON.stringify(insights).includes("The supplied context supports"), false);
+    });
+
     it("requires a reason for changes, records review history, supports resubmission, and approves", async () => {
       const copy = "The workspace helps teams coordinate projects.";
       const draft = await createDraft("Review workflow test", copy, true);

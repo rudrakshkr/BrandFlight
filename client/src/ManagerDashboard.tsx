@@ -12,6 +12,34 @@ interface SubmissionSummary {
   _count?: { findings: number; comments: number; revisions: number }
 }
 
+type OverrideReasonCategory = 'RULE_UNCLEAR' | 'CHANNEL_EXCEPTION' | 'FALSE_POSITIVE' | 'UNCATEGORIZED'
+
+interface OverrideInsightBucket {
+  category: OverrideReasonCategory
+  total: number
+  pending: number
+  accepted: number
+  rejected: number
+}
+
+interface OverrideRuleInsight {
+  ruleCode: string
+  total: number
+  pending: number
+  accepted: number
+  rejected: number
+}
+
+interface OverrideGovernanceInsights {
+  totalRequests: number
+  pending: number
+  accepted: number
+  rejected: number
+  categories: OverrideInsightBucket[]
+  topRules: OverrideRuleInsight[]
+  recurringRuleThreshold: number
+}
+
 interface ManagerDashboardProps {
   apiBaseUrl: string
   token: string
@@ -32,6 +60,13 @@ function dateLabel(value: string) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString()
 }
 
+const OVERRIDE_REASON_LABELS: Record<OverrideReasonCategory, string> = {
+  RULE_UNCLEAR: 'Rule unclear',
+  CHANNEL_EXCEPTION: 'Channel exception',
+  FALSE_POSITIVE: 'False positive',
+  UNCATEGORIZED: 'Legacy / uncategorized',
+}
+
 export default function ManagerDashboard({
   apiBaseUrl,
   token,
@@ -43,6 +78,9 @@ export default function ManagerDashboard({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState('ALL')
+  const [governanceInsights, setGovernanceInsights] = useState<OverrideGovernanceInsights | null>(null)
+  const [insightsLoading, setInsightsLoading] = useState(true)
+  const [insightsError, setInsightsError] = useState<string | null>(null)
 
   const loadSubmissions = useCallback(async () => {
     setLoading(true)
@@ -69,10 +107,38 @@ export default function ManagerDashboard({
     }
   }, [apiBaseUrl, token])
 
+  const loadGovernanceInsights = useCallback(async () => {
+    setInsightsLoading(true)
+    setInsightsError(null)
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/submissions/governance/override-insights`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const data = (await response.json().catch(() => null)) as {
+        insights?: OverrideGovernanceInsights
+        error?: string
+      } | null
+
+      if (!response.ok || !data?.insights) {
+        throw new Error(data?.error ?? `Unable to load governance insights (HTTP ${response.status}).`)
+      }
+
+      setGovernanceInsights(data.insights)
+    } catch (err) {
+      setInsightsError(err instanceof Error ? err.message : 'Unable to load governance insights.')
+    } finally {
+      setInsightsLoading(false)
+    }
+  }, [apiBaseUrl, token])
+
   useEffect(() => {
-    const timer = window.setTimeout(() => void loadSubmissions(), 0)
+    const timer = window.setTimeout(() => {
+      void loadSubmissions()
+      void loadGovernanceInsights()
+    }, 0)
     return () => window.clearTimeout(timer)
-  }, [loadSubmissions])
+  }, [loadGovernanceInsights, loadSubmissions])
 
   const counts = useMemo(() => ({
     total: submissions.length,
@@ -104,10 +170,13 @@ export default function ManagerDashboard({
         <button
           type="button"
           className="bf-btn-secondary"
-          onClick={() => void loadSubmissions()}
-          disabled={loading}
+          onClick={() => {
+            void loadSubmissions()
+            void loadGovernanceInsights()
+          }}
+          disabled={loading || insightsLoading}
         >
-          {loading ? 'Refreshing…' : 'Refresh overview'}
+          {loading || insightsLoading ? 'Refreshing…' : 'Refresh overview'}
         </button>
       </header>
 
@@ -153,6 +222,107 @@ export default function ManagerDashboard({
           <strong>{loading ? '—' : counts.approved}</strong>
           <span className="bf-manager-metric-note">Cleared by review</span>
         </article>
+      </section>
+
+      <section className="bf-governance-insights" aria-labelledby="bf-governance-insights-title">
+        <header className="bf-governance-insights-header">
+          <div>
+            <span className="bf-governance-eyebrow">GOVERNANCE SIGNALS</span>
+            <h2 id="bf-governance-insights-title">Override request patterns</h2>
+            <p>Use creator-selected reasons and referenced rules to identify guidance that may need review.</p>
+          </div>
+          <span className="bf-governance-period">All-time view</span>
+        </header>
+
+        {insightsLoading ? (
+          <div className="bf-governance-empty" aria-live="polite">Loading override patterns…</div>
+        ) : insightsError ? (
+          <div className="bf-governance-empty bf-governance-error" role="alert">{insightsError}</div>
+        ) : governanceInsights && governanceInsights.totalRequests === 0 ? (
+          <div className="bf-governance-empty">
+            <strong>No override requests recorded yet</strong>
+            <p>When creators submit override requests, their reason categories and rule references will appear here.</p>
+          </div>
+        ) : governanceInsights ? (
+          <>
+            <div className="bf-governance-metrics" aria-label="Override decision summary">
+              <article>
+                <span>Total requests</span>
+                <strong>{governanceInsights.totalRequests}</strong>
+              </article>
+              <article>
+                <span>Awaiting acknowledgement</span>
+                <strong>{governanceInsights.pending}</strong>
+              </article>
+              <article>
+                <span>Acknowledged · accepted</span>
+                <strong>{governanceInsights.accepted}</strong>
+              </article>
+              <article>
+                <span>Acknowledged · rejected</span>
+                <strong>{governanceInsights.rejected}</strong>
+              </article>
+            </div>
+
+            <div className="bf-governance-breakdowns">
+              <section className="bf-governance-breakdown">
+                <div className="bf-governance-breakdown-heading">
+                  <h3>Reasons selected</h3>
+                  <span>Creator-reported context</span>
+                </div>
+                <div className="bf-governance-reason-list">
+                  {governanceInsights.categories.map((item) => (
+                    <article key={item.category} className="bf-governance-reason">
+                      <div className="bf-governance-reason-topline">
+                        <strong>{OVERRIDE_REASON_LABELS[item.category]}</strong>
+                        <span>{item.total}</span>
+                      </div>
+                      <div className="bf-governance-reason-meta">
+                        <span>{item.pending} pending</span>
+                        <span>{item.accepted} accepted</span>
+                        <span>{item.rejected} rejected</span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+
+              <section className="bf-governance-breakdown">
+                <div className="bf-governance-breakdown-heading">
+                  <h3>Frequently referenced rules</h3>
+                  <span>Top rule codes</span>
+                </div>
+                {governanceInsights.topRules.length === 0 ? (
+                  <div className="bf-governance-no-rules">No rule codes were captured in these requests.</div>
+                ) : (
+                  <div className="bf-governance-rule-list">
+                    {governanceInsights.topRules.map((item) => (
+                      <article key={item.ruleCode} className="bf-governance-rule">
+                        <div className="bf-governance-rule-topline">
+                          <code>{item.ruleCode}</code>
+                          <strong>{item.total} {item.total === 1 ? 'request' : 'requests'}</strong>
+                        </div>
+                        <div className="bf-governance-rule-track" aria-hidden="true">
+                          <span style={{ width: `${Math.max(4, (item.total / governanceInsights.topRules[0]!.total) * 100)}%` }} />
+                        </div>
+                        <div className="bf-governance-rule-footer">
+                          <span>{item.pending} pending · {item.accepted} accepted · {item.rejected} rejected</span>
+                          <span className={item.total >= governanceInsights.recurringRuleThreshold ? 'is-recurring' : 'is-early'}>
+                            {item.total >= governanceInsights.recurringRuleThreshold ? 'Recurring signal' : 'Early signal'}
+                          </span>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+
+            <p className="bf-governance-footnote">
+              Rule references appearing {governanceInsights.recurringRuleThreshold} or more times are marked as recurring signals. Legacy / uncategorized includes older requests recorded before structured reason categories were introduced. These patterns indicate where to inspect guidance; they do not prove a rule is incorrect. An accepted acknowledgement does not resolve findings or bypass the Release Gate.
+            </p>
+          </>
+        ) : null}
       </section>
 
       <section className="bf-manager-table-card">
