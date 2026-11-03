@@ -2,90 +2,184 @@
 
 **Pre-publication brand governance for marketing copy and campaign assets.**
 
-BrandFlight is a hackathon prototype that checks marketing drafts against a structured brand rulebook and approved facts before publication. It combines deterministic checks with Gemini-based semantic review and gives creators, managers, and reviewers a shared workflow for resolving findings and recording review decisions.
+BrandFlight helps teams check campaign content against a brand's rules, approved facts and visual standards before it is published. Creators can audit and improve drafts, while Managers and Reviewers manage brand guidance and make the final review decision.
 
-## What it does
+> **Codex 48 — Round 3 Final Build**  
+> A working web application built by Team BrandFlight.
 
-- **Brand rulebook:** manage brand rules, approved terminology, product facts, and brand colours.
-- **Text preflight:** scan copy for configured terminology rules and unsupported numerical claims; use Gemini for semantic tone and claim review when configured.
-- **Image preflight:** upload campaign images, inspect dominant colours, compare them with the approved palette, and validate alt-text presence and length.
-- **Explainable findings:** show the finding category, evidence, rule reference, confidence, and guidance where available.
-- **Campaign workflow:** save drafts, submit them for review, view revision history, discuss submissions with comments, request overrides, request changes with a reason, and approve submissions according to role permissions.
-- **Role-based access:** JWT-authenticated Creator, Manager, and Reviewer roles with server-side permissions.
-- **Audit receipts:** record hashes for audit inputs and relevant brand configuration so a result can be tied to the inputs that were checked.
-- **Judge onboarding:** one-click demo sign-in buttons for Creator, Manager, and Reviewer are available when demo access is enabled in both the frontend and backend configuration.
+## Live project
 
-## Application architecture
+| Resource | Link |
+|---|---|
+| **Live application** | https://brand-flight.vercel.app |
+| **Backend health check** | https://brandflight.onrender.com/api/health |
+| **Source repository** | https://github.com/rudrakshkr/BrandFlight |
+
+The deployed application uses a separate frontend and API. The API connects to PostgreSQL through Prisma; uploaded images are stored in Cloudinary.
+
+## What BrandFlight does
+
+BrandFlight brings preflight checks and human approval into one workflow:
+
+1. **Configure the brand.** A Manager maintains the brand profile, rules, approved facts, colour palette, accessibility standards and approved logo asset.
+2. **Prepare a campaign.** A Creator writes campaign copy and uploads an image with meaningful alt text.
+3. **Run preflight checks.** BrandFlight checks text and imagery, then returns findings with evidence and remediation guidance.
+4. **Resolve findings.** The Creator edits the draft, applies a safe suggested replacement when one is available, or requests an exception with a structured reason.
+5. **Submit for review.** The Creator saves the draft and submits it with the required audit evidence.
+6. **Review and decide.** A Reviewer or Manager comments, requests changes with a reason, or approves the campaign.
+7. **Verify the release.** Approved campaigns can receive a Release Passport that records the approved version and can be checked through a public verification page.
+
+Automated checks assist the team; they do not replace human review or silently publish content.
+
+## Main features
+
+### Brand rulebook and approved facts
+
+- Create and edit brand profiles, rules and approved facts.
+- Configure terminology, tone, claim, visual and accessibility guidance.
+- Maintain the approved brand colour palette and role-based foreground/background colour pairs.
+- Register an approved logo or other brand asset for image comparison.
+- Import rules and facts using structured JSON.
+
+### Text preflight
+
+- Deterministic checks identify configured terminology and numerical claims that do not match approved facts.
+- Gemini provides semantic tone and claim review when an API key is configured.
+- Findings include the category, severity, rule reference, evidence, confidence and suggested action where available.
+- A direct replacement is offered only when a safe, non-empty replacement is available. Some findings provide guidance for manual editing instead.
+
+### Image preflight and accessibility
+
+- Accept campaign image uploads and store uploaded assets through Cloudinary.
+- Use Sharp to inspect image dimensions and dominant colours and compare the palette with the active brand profile.
+- Check alt-text presence and length.
+- Locate visible text regions with Gemini assistance, then sample foreground and background pixels using Sharp to calculate contrast where the image region can be measured reliably.
+- Compare measured text contrast with the configured WCAG 2.1 role target. Ambiguous, variable, transparent, multi-colour or otherwise unreliable regions are sent for manual review rather than being reported as a pass.
+- Compare uploaded campaign artwork with a Manager-approved logo reference when one is configured.
+
+The image check is a screening aid, not a complete WCAG conformance audit or certification. It does not currently measure every non-text icon or control boundary.
+
+### Creator, Reviewer and Manager workflow
+
+- JWT-authenticated roles with server-side role checks.
+- Persistent campaign drafts, submissions and revision history.
+- Reviewer comments and change requests with a required explanation.
+- Creator override requests with structured categories: **Rule unclear**, **Channel exception** and **False positive**.
+- Reviewer or Manager decisions on override requests, including a recorded decision note.
+- Manager-only governance insights that aggregate override categories, outcomes and recurring rule references.
+- Campaign change comparison to help reviewers understand what changed between revisions.
+
+### Privacy-aware text processing
+
+Before text is sent to Gemini, BrandFlight uses pattern-based detection to temporarily mask supported values such as email addresses, UPI IDs, Indian phone numbers, Aadhaar-shaped values, PAN-shaped values and Luhn-valid payment-card numbers. The original values are restored in the returned result, and detected PII ranges are excluded from numerical-claim detection.
+
+This is not a general-purpose PII detector: it can miss information outside the supported patterns. Image pixels are not masked. Image processing uses external services, so the application requires an explicit acknowledgement before the image is sent for processing. Sensitive information should be manually redacted from images before upload.
+
+### Release Passports
+
+When a campaign is approved, BrandFlight can issue a Release Passport containing a snapshot of the campaign, relevant audit receipts, brand configuration and approval details. The snapshot is signed using HMAC-SHA256. A public, read-only verification route checks the signature and whether the saved snapshot still matches the current campaign and relevant evidence.
+
+The passport provides a verifiable approval snapshot; it is not a blockchain record or a general-purpose append-only event ledger.
+
+## PahariKnits judge workspace
+
+The judge database is seeded with a sample brand workspace named **PahariKnits**, based on a Himalayan apparel catalogue. It includes:
+
+- Six brand rules covering craft-led tone, unsupported superlatives, product claims, visual identity, alt text and text contrast.
+- Nine approved product and policy facts covering product names, listed prices, materials, origins and return conditions.
+- A navy, cream, copper and teal colour palette, with five role-based accessibility pairs.
+- Demo accounts for Creator, Manager and Reviewer.
+
+The official PahariKnits logo is included at `client/public/pahariknits-logo.png`. After deployment, a Manager should upload it once under **Brand Rulebook → Approved Brand Assets**, set the expected wordmark to `PahariKnits`, and save it as the primary logo reference. Keep the **Logo required on campaign images** option off unless the campaign creative being audited actually contains the logo.
+
+The bundled logo is a brand reference asset, not a product photograph. For the image-audit walkthrough, upload an authentic PahariKnits product or campaign image using the Creator account.
+
+## Technology and architecture
+
+| Layer | Implementation | Responsibility |
+|---|---|---|
+| Frontend | React 19, TypeScript, Vite 8, React Router | Creator workspace, rulebook, campaign lists, review queue and verification UI |
+| API | Node.js, Express 5, TypeScript | REST endpoints, authentication, validation and workflow enforcement |
+| Authentication | JWT and bcryptjs | Signed user sessions and password hashing |
+| Database | PostgreSQL, Prisma 7, `@prisma/adapter-pg` | Users, brands, rules, facts, assets, submissions, revisions, comments, receipts and passports |
+| Semantic checks | Google GenAI SDK (default model: `gemini-3.5-flash-lite`) | Tone and claim review, text-region location and copy refinement |
+| Image processing | Sharp | Dominant-colour and pixel-sampling analysis |
+| Image storage | Cloudinary | Uploaded campaign and approved brand assets |
+| Hosting | Vercel, Render and PostgreSQL (Neon for the judge environment) | Frontend, API and persistent data |
+
+### Request flow
 
 ```text
-Browser (React + Vite)
-        |
-        | HTTP / JSON + bearer JWT
-        v
-Express + TypeScript API
-  |        |           |
-  |        |           +-- Gemini API (semantic tone/claim review and copy refinement)
-  |        +-------------- Cloudinary (image asset storage) + Sharp (image analysis)
-  +----------------------- Prisma 7 + PostgreSQL
+Creator / Manager / Reviewer browser
+              |
+              | HTTPS, JSON and bearer JWT
+              v
+        React + Vite frontend
+              |
+              v
+       Express + TypeScript API
+          /       |        \
+         /        |         \
+        v         v          v
+   Rule checks  Gemini      Sharp
+        |       semantic   image/pixel
+        |       review     analysis
+        |         |          |
+        +---------+----------+
+                  |
+                  v
+         Prisma 7 + PostgreSQL
+                  |
+          Cloudinary assets
 ```
 
-### Technology stack
+Audit receipts bind an audit result to the input and relevant configuration hashes. This makes it possible to reject submissions whose draft or audit evidence has become stale. A stale draft must be audited again before it can proceed through the required workflow.
 
-| Layer | Current implementation |
-|---|---|
-| Frontend | React 19, TypeScript, Vite 8, React Router, custom CSS |
-| Backend | Node.js, Express 5, TypeScript, JWT, bcryptjs |
-| Database | PostgreSQL, Prisma 7, `@prisma/adapter-pg` |
-| Semantic review | Google GenAI SDK; `GEMINI_MODEL` defaults to `gemini-3.5-flash-lite` |
-| Image handling | Sharp for image analysis; Cloudinary for uploaded asset storage |
-| Deployment targets | Frontend: Vercel; API: Render; database: PostgreSQL provider such as Neon |
+## Getting started
 
-The implementation has evolved since the Round 1 plan. This README describes the current package manifests and server defaults; it does not claim that the Round 1 planned React 18, Tailwind CSS, or Gemini 2.5 Flash configuration is the current stack.
+### Requirements
 
-## Quick start (local development)
+- Node.js and npm compatible with the current Vite toolchain.
+- A PostgreSQL database for local development.
+- A Gemini API key for semantic text review and image text-region assistance.
+- Cloudinary credentials for image uploads and approved brand assets.
 
-### Prerequisites
+The API can start without Gemini or Cloudinary credentials, but the related features will be unavailable or incomplete.
 
-- Node.js and npm compatible with the current Vite toolchain
-- A PostgreSQL database (a local database or a development Neon database)
-- A Gemini API key for semantic tone/claim review
-- Cloudinary credentials for image uploads
-
-The API can start without Gemini or Cloudinary configured, but the corresponding AI or image-upload capabilities will not be fully available.
-
-### 1. Configure the server
+### 1. Configure the backend
 
 From the repository root:
 
 ```bash
 cd server
-cp .env.example .env
 npm install
+cp .env.example .env
 ```
 
-Edit `server/.env` and set the values below. Keep this file local; never commit it.
+Set the following values in `server/.env`. Never commit this file.
 
-| Variable | Purpose |
-|---|---|
-| `DATABASE_URL` | PostgreSQL connection string used by Prisma and the API |
-| `JWT_SECRET` | Strong signing secret; the API requires at least 32 characters |
-| `CLIENT_URL` | Exact browser origin allowed by CORS, normally `http://localhost:5173` locally |
-| `PORT` | API port; defaults to `3000` |
-| `GEMINI_API_KEY` | Google Gemini API key for semantic review and copy refinement |
-| `GEMINI_MODEL` | Optional model override; defaults to `gemini-3.5-flash-lite` |
-| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name for image uploads |
-| `CLOUDINARY_API_KEY` | Cloudinary API key |
-| `CLOUDINARY_API_SECRET` | Cloudinary API secret |
-| `DEMO_CREATOR_PASSWORD` | Password used to seed the Creator account |
-| `DEMO_MANAGER_PASSWORD` | Password used to seed the Manager account |
-| `DEMO_REVIEWER_PASSWORD` | Password used to seed the Reviewer account |
-| `DEMO_LOGIN_ENABLED` | Set to `true` to allow the one-click demo-login API endpoint |
+| Variable | Required | Purpose |
+|---|---:|---|
+| `DATABASE_URL` | Yes | PostgreSQL connection string for the intended local or judge database |
+| `JWT_SECRET` | Yes | Random signing secret of at least 32 characters |
+| `CLIENT_URL` | Yes | Exact frontend origin allowed by CORS (local default: `http://localhost:5173`) |
+| `PORT` | No | API port (defaults to `3000`) |
+| `GEMINI_API_KEY` | For AI features | Google Gemini API key |
+| `GEMINI_MODEL` | No | Model override; defaults to `gemini-3.5-flash-lite` |
+| `CLOUDINARY_CLOUD_NAME` | For image features | Cloudinary cloud name |
+| `CLOUDINARY_API_KEY` | For image features | Cloudinary API key |
+| `CLOUDINARY_API_SECRET` | For image features | Cloudinary API secret |
+| `RELEASE_PASSPORT_SECRET` | No | Optional separate signing secret; defaults to `JWT_SECRET` if unset |
+| `DEMO_CREATOR_PASSWORD` | For seeding | Creator account password (at least 16 characters) |
+| `DEMO_MANAGER_PASSWORD` | For seeding | Manager account password (at least 16 characters) |
+| `DEMO_REVIEWER_PASSWORD` | For seeding | Reviewer account password (at least 16 characters) |
+| `DEMO_LOGIN_ENABLED` | For demo buttons | Set to `true` to enable the role-based demo-login endpoint |
 
-All three demo passwords must be at least 16 characters for the seed script. They are used to seed normal password login; the one-click demo endpoint issues a short-lived token for the matching seeded role without asking for that password.
+Use unique random values for secrets and demo passwords. Do not paste credentials into issues, screenshots or the README.
 
-### 2. Generate Prisma Client, migrate, and seed
+### 2. Generate Prisma Client, migrate and seed
 
-Run these commands from `server/`. This repository names its Prisma configuration `prisma7.config.ts`, so pass it explicitly to the Prisma CLI:
+Run from `server/`:
 
 ```bash
 npx prisma generate --config prisma7.config.ts
@@ -93,17 +187,17 @@ npx prisma migrate deploy --config prisma7.config.ts
 npx prisma db seed --config prisma7.config.ts
 ```
 
-The seed script creates the demo Creator, Manager, and Reviewer users, the `brandflight-demo` / **Northstar Workspace** brand profile, starter rules, approved product facts, and the demo colour palette. Seeding requires the database and all three demo password variables to be configured.
+Apply migrations **before** running the seed. A new database has no application tables until `migrate deploy` succeeds. The seed script creates the three demo accounts and upserts the PahariKnits brand profile, rules and approved facts. It does not delete submissions or review history.
 
 ### 3. Start the API
 
-Still in `server/`:
+From `server/`:
 
 ```bash
 npm run dev
 ```
 
-The default API origin is `http://localhost:3000`. Check the health endpoint:
+The local API defaults to `http://localhost:3000`. Check it with:
 
 ```bash
 curl http://localhost:3000/api/health
@@ -117,12 +211,12 @@ Expected response:
 
 ### 4. Configure and start the frontend
 
-In a second terminal, from the repository root:
+Open a second terminal from the repository root:
 
 ```bash
 cd client
-cp .env.example .env
 npm install
+cp .env.example .env
 ```
 
 Set `client/.env`:
@@ -132,9 +226,7 @@ VITE_API_URL=http://localhost:3000
 VITE_DEMO_MODE=true
 ```
 
-`VITE_API_URL` must be the **API origin**, without an `/api` suffix. The frontend adds the route paths itself. Demo buttons are shown automatically in Vite development mode; `VITE_DEMO_MODE=true` enables their visibility in a production build.
-
-Start the frontend:
+`VITE_API_URL` is the API origin only; do not add `/api`. Start the frontend:
 
 ```bash
 npm run dev
@@ -142,99 +234,135 @@ npm run dev
 
 Open the local URL printed by Vite, normally `http://localhost:5173`.
 
-## Judge access and demo sign-in
+## Judge walkthrough
 
-The login screen offers one-click access to the three seeded roles:
+The login page provides one-click access to the three seeded roles when demo access is enabled.
 
-| Role | Demo account email | Intended use |
+| Role | Demo account | Suggested walkthrough |
 |---|---|---|
-| Creator | `creator@brandflight.demo` | Draft copy, run audits, resolve findings, save and submit content, and request overrides |
-| Manager | `manager@brandflight.demo` | Manage brand guidance and participate in the review workflow |
-| Reviewer | `reviewer@brandflight.demo` | Review submissions, comment, request changes, and approve content |
+| **Creator** | `creator@brandflight.demo` | Audit copy, upload a product/campaign image, review findings, fix issues, save a draft and submit it for review. |
+| **Reviewer** | `reviewer@brandflight.demo` | Open an in-review campaign, inspect audit evidence and revisions, comment, request changes with a reason, or approve. |
+| **Manager** | `manager@brandflight.demo` | Inspect the PahariKnits rulebook and approved facts, review accessibility colour standards and governance insights, and manage brand assets. |
 
-For local judging, make sure the three accounts have been seeded and `DEMO_LOGIN_ENABLED=true` is set in `server/.env`. In a production frontend build, set `VITE_DEMO_MODE=true` at build time as well.
+For demo sign-in, the backend must have `DEMO_LOGIN_ENABLED=true`, and the frontend production build must have `VITE_DEMO_MODE=true`. The three seeded users must exist in the judge database.
 
-**Security warning:** when `DEMO_LOGIN_ENABLED=true`, anyone who can reach the API can request a demo session for any of these three roles. Enable this only for a deliberately public demo/judge environment, use a non-production database with synthetic data, and turn it off when the judging window ends. `VITE_DEMO_MODE` only controls whether the buttons are shown; the backend `DEMO_LOGIN_ENABLED` switch controls whether the endpoint issues tokens.
+**Security:** public demo login allows anyone who can reach the API to request a session as any of the three demo roles. Use it only with an isolated judge database containing synthetic demo data. Disable `DEMO_LOGIN_ENABLED` after judging if public role access is no longer required.
 
-If demo sign-in is unavailable, check that the backend switch is exactly `true`, all three users exist in the database, `JWT_SECRET` is configured, and the frontend's `VITE_API_URL` points to the correct API origin.
+## Testing and validation
 
-## Useful scripts
+### Run the checks
 
-### Frontend (`client/`)
-
-```bash
-npm run dev      # Start Vite development server
-npm run build    # Type-check and build the frontend
-npm run lint     # Run ESLint
-npm run preview  # Preview the production build locally
-```
-
-### Backend (`server/`)
+Frontend:
 
 ```bash
-npm run dev      # Run the API with tsx watch
-npm run build    # Compile TypeScript
-npm start        # Run the compiled API
-npm test         # Run unit tests and the optional API integration suite
+cd client
+npm run build
+npm run lint
+npm test
 ```
 
-The unit tests cover audit receipt hashing and review-decision validation. The API integration suite is skipped unless `TEST_DATABASE_URL` points to a separate, disposable PostgreSQL test database. Configure and migrate that database according to the integration test's setup before using it. **Never point test runs at production or at a database containing data you need to keep.** A skipped integration suite is not evidence that the end-to-end workflow passed.
+Backend:
+
+```bash
+cd server
+npm run build
+npm test
+```
+
+The tests cover areas including:
+
+- WCAG contrast calculations and approved-palette swatch recommendations.
+- Pixel-based image text contrast analysis and uncertain-region handling.
+- PII detection, temporary masking and restoration.
+- Numerical-claim detection when PII-shaped values are present.
+- Audit receipt hashing and Release Passport signing/verification.
+- Review validation, override decisions and governance insight aggregation.
+- API integration scenarios for authentication/RBAC, audits, drafts, revisions, comments, overrides and review decisions.
+
+The API integration suite requires a separate disposable PostgreSQL database configured through `TEST_DATABASE_URL`. Do not point it at the judge database or any database containing data you need to keep. If the integration suite is skipped because the test database is not configured, that is not an end-to-end pass.
 
 ## Important API routes
 
 | Route | Purpose |
 |---|---|
 | `GET /api/health` | API health check |
-| `POST /api/auth/login` | Authenticate using email and password |
-| `POST /api/auth/demo-login` | Opt-in one-click role-based demo sign-in |
-| `GET /api/auth/me` | Return the authenticated user |
-| `/api/brands` | Brand profiles, rules, approved facts, and brand assets |
-| `/api/submissions` | Drafts, submission workflow, comments, and review operations |
-| `POST /api/audit/refine` | Creator-only copy refinement endpoint |
-| `POST /api/audit` | Authenticated text preflight audit |
-| `/api/audit/image` | Image audit and related image workflow endpoints |
+| `POST /api/auth/login` | Email/password login |
+| `POST /api/auth/demo-login` | Opt-in role-based demo login |
+| `GET /api/auth/me` | Current authenticated user |
+| `/api/brands` | Brand profiles, rules, facts and approved brand assets |
+| `/api/submissions` | Drafts, submissions, comments, revisions and review decisions |
+| `POST /api/audit` | Text preflight audit |
+| `POST /api/audit/refine` | Creator copy refinement |
+| `/api/audit/image` | Image audit and related image endpoints |
+| `/api/submissions/governance/override-insights` | Manager-only override insights |
+| `GET /api/submissions/passport/:passportId/verify` | Public Release Passport verification endpoint |
 
-Protected API operations require `Authorization: Bearer <token>`. Server middleware, not frontend navigation alone, enforces the user's role.
+Protected routes require `Authorization: Bearer <token>`. Authorization is enforced by backend middleware.
 
-## Deployment checklist (Vercel + Render + PostgreSQL)
+## Deployment
 
-Code in a repository snapshot cannot verify whether a live deployment is correctly configured. Before giving judges the URL, check each item in the actual hosting dashboards:
+The current deployment targets are Vercel (frontend), Render (API) and Neon PostgreSQL (judge database). Environment variables must be set in the hosting dashboards; local `.env` files are not deployed automatically.
 
-- [ ] Set the frontend's `VITE_API_URL` to the deployed API origin (no `/api` suffix) and rebuild the frontend.
-- [ ] Set backend `CLIENT_URL` to the exact deployed frontend origin so CORS permits browser requests.
-- [ ] Set a unique `JWT_SECRET` of at least 32 characters.
-- [ ] Set `DATABASE_URL`, run the migrations against the intended deployment database, and seed the demo brand and accounts.
-- [ ] Set `GEMINI_API_KEY` and verify a real text audit from a fresh browser session.
-- [ ] Set all three Cloudinary credentials and verify a real image upload and audit from a fresh browser session.
-- [ ] For judge access, temporarily set backend `DEMO_LOGIN_ENABLED=true` and frontend build variable `VITE_DEMO_MODE=true`; test each role and confirm role restrictions.
-- [ ] Disable public demo sign-in after judging if it is no longer required.
+Before opening the application to judges, verify the following in the hosting dashboards:
 
-Do not assume that local success proves the deployed migrations, environment variables, CORS policy, Gemini calls, or Cloudinary uploads work.
+- [ ] Vercel `VITE_API_URL` points to the deployed API origin (without `/api`).
+- [ ] Vercel `VITE_DEMO_MODE=true` is set at build time if judge demo buttons are required; rebuild after changing it.
+- [ ] Render `CLIENT_URL` exactly matches the deployed Vercel origin.
+- [ ] Render `DATABASE_URL` points to the dedicated judge Neon project.
+- [ ] Run `prisma migrate deploy` and then `prisma db seed` against that same judge database.
+- [ ] `JWT_SECRET` is a unique random secret of at least 32 characters.
+- [ ] Gemini credentials are configured and a real text audit has been checked.
+- [ ] Cloudinary credentials are configured and a real image upload/audit has been checked.
+- [ ] `DEMO_LOGIN_ENABLED=true` only for the intended judging window; test all three roles and role restrictions.
+- [ ] The PahariKnits logo is registered as an approved brand asset if logo verification is part of the walkthrough.
 
-## Accessibility colour standards
-
-Managers can save role-based foreground/background standards in **Brand Rulebook → Brand Profile → Accessible colour roles**. Saving these standards updates the image-audit configuration hash, so image audit receipts created under earlier standards become stale and must be rerun before they can be attached to a submission. Image preflight uses Gemini only to locate visible text regions and classify their likely role and size. The server then samples foreground glyph-core pixels and the surrounding/interior backing pixels from the uploaded image using Sharp. Contrast ratios are calculated only when the text location is high confidence, the backing surface is opaque and sufficiently uniform, and a compact foreground colour cluster can be isolated. A 0.15:1 guard band above the target is required to return a pixel-sampled pass; borderline, ambiguous, variable, transparent, multicolour, or poorly located regions are routed for manual review. Results and manual-review findings are shown to both the Creator and Reviewer. Existing brand profiles can use the default WCAG targets until a Manager saves the role palette.
+A Git push deploys code when automatic deployment is enabled, but it does not change the database selected by the backend. The Render `DATABASE_URL` determines which PostgreSQL database the deployed API uses.
 
 ## Known limitations
 
-- This is a prototype, not a replacement for legal, compliance, or accessibility review. AI findings can be wrong or miss context; reviewers remain responsible for final decisions.
-- Image preflight combines deterministic palette/alt-text checks with Gemini-assisted text-region location and deterministic pixel sampling. Contrast results use colours sampled from the uploaded image, not Gemini-generated colour estimates. Sampling fails closed when the background is variable or transparent, text colours cannot be isolated, the detected region is uncertain, or the bounding box is missing. Gemini still estimates text location, role, and size; non-text icon/control-boundary contrast is not yet measured automatically. This is not full OCR or a WCAG conformance certification, and reviewers remain responsible for checking the final exported artwork.
-- A direct phrase replacement is offered only when a non-empty, safe suggestion is available. Deterministic terminology and numerical-claim findings may provide guidance without a direct replacement span.
-- Audit receipts bind results to input/configuration hashes; they are not a separate append-only, tamper-proof decision-event log.
-- The integration suite needs a dedicated PostgreSQL test database. Without it, the current test command can report a skipped integration suite while the unit tests pass.
-- Live service health and external credentials must be verified in the deployment environment; they cannot be proven by the repository alone.
+- BrandFlight is a prototype and does not replace legal, compliance, brand or accessibility professionals.
+- Gemini can produce false positives or miss context. Reviewers remain responsible for decisions.
+- PII masking is pattern-based and only covers the supported formats listed above. It is not comprehensive detection.
+- Image pixels are not PII-masked. Sensitive details should be removed from artwork before upload.
+- Image contrast is calculated only when text regions and solid backgrounds can be sampled reliably. Uncertain, transparent, gradient, textured or multicolour regions may require manual review.
+- Gemini-assisted text-region location is not full OCR. Non-text icon and control-boundary contrast is not yet measured automatically.
+- The system checks configured brand rules and approved facts; it does not independently establish legal truth or product substantiation.
+- Audit receipts are input/configuration-linked hashes. They are not an append-only event-sourcing ledger.
+- Live credentials, deployment configuration and third-party service availability must be verified on the deployed environment.
 
-## Repository layout
+## Project structure
 
 ```text
-client/   React + Vite frontend
-server/   Express API, Prisma schema/migrations, seed script, tests
-README.md Project setup, feature overview, and operational notes
+client/                 React + Vite application
+  public/               Static assets, including BrandFlight and PahariKnits marks
+  src/                  Pages, workflow panels, accessibility and UI components
+server/                 Express + TypeScript API
+  prisma/               Prisma schema, migrations and seed script
+  src/                  Routes, middleware and service logic
+  test/                 Unit tests and API integration tests
+README.md               Setup, architecture, judge walkthrough and operating notes
 ```
 
-## Security and contribution notes
+## Future development
 
-- Never commit `.env` files, real API keys, JWT secrets, database URLs, or actual demo passwords.
-- Use `.env.example` files only for variable names and safe placeholders.
-- Keep `.brandflight-backups/`, local backup copies, generated Repomix exports, dependency folders, and build output out of the public repository.
-- Before committing, review `git status --short`, inspect `git diff`, and run `git diff --check`.
+- Expand brand integrations and support importing approved facts from product/catalogue systems.
+- Improve text extraction and image understanding for more complex campaign layouts.
+- Add broader automated browser-based testing for the full Creator-to-Reviewer journey.
+- Extend governance reporting with trend comparisons and rule-quality follow-up.
+
+## Security and repository hygiene
+
+- Never commit `.env` files, API keys, database URLs, JWT secrets, Cloudinary credentials or demo passwords.
+- Keep test databases separate from judge and production databases.
+- Review changes before committing:
+
+```bash
+git status --short
+git diff --check
+git diff
+```
+
+---
+
+Built for **Codex 48 Hackathon by WeCodeCoders**.  
+**Team BrandFlight** — Rudraksh Kumar, team leader and sole developer.
